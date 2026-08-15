@@ -26,8 +26,16 @@ import { escapeHtml } from './pages.js';
  * and a translation that drops a placeholder loses formatting rather than
  * breaking the page.
  */
-function fill(template: string, parts: Readonly<Record<string, string>>): string {
-  return escapeHtml(template).replace(/\{(\w+)\}/g, (whole, key: string) => parts[key] ?? whole);
+export function fill(template: string, parts: Readonly<Record<string, string>>): string {
+  // Object.hasOwn, not a bare lookup: `\w+` happily matches `constructor` and
+  // `toString`, which a plain index would resolve on Object.prototype and
+  // splice in as raw HTML. No string here contains such a placeholder today —
+  // which is exactly when this is one word to get right rather than an
+  // incident to explain.
+  return escapeHtml(template).replace(/\{(\w+)\}/g, (whole: string, key: string) => {
+    const part = Object.hasOwn(parts, key) ? parts[key] : undefined;
+    return part ?? whole;
+  });
 }
 
 /**
@@ -189,16 +197,20 @@ export function landingPage(
     <h2>${escapeHtml(t.claudeTitle)}</h2>
     <ol>
       <li>${fill(t.claudeStep1, {
-        action: '<strong>Settings → Connectors → Add custom connector</strong>',
+        // lang="en" on the fragments that stay English by design: a screen
+        // reader in a lang="de" document would otherwise pronounce these with
+        // German phonetics, and they are exactly the words the user has to
+        // recognise on their own screen. WCAG 2.1 AA, 3.1.2 Language of Parts.
+        action: '<strong lang="en">Settings → Connectors → Add custom connector</strong>',
       })}</li>
-      <li>${escapeHtml(t.claudeStep2)}</li>
-      <li>${fill(t.claudeStep3, { action: '<strong>Connect</strong>' })}</li>
+      <li>${fill(t.claudeStep2, { host: '<code>&lt;n8n-host&gt;</code>' })}</li>
+      <li>${fill(t.claudeStep3, { action: '<strong lang="en">Connect</strong>' })}</li>
     </ol>
   </section>
 
   <section>
     <h2>${escapeHtml(t.endpointsTitle)}</h2>
-    <table>
+    <table lang="en">
       <tr><td class="m"><span class="method">ALL</span></td><td class="p">/i/&lt;n8n-host&gt;/mcp</td><td class="n">MCP, OAuth-gated</td></tr>
       <tr><td class="m"><span class="method">GET</span></td><td class="p">/.well-known/oauth-protected-resource/i/&lt;n8n-host&gt;/mcp</td><td class="n">RFC 9728</td></tr>
       <tr><td class="m"><span class="method">GET</span></td><td class="p">/.well-known/oauth-authorization-server</td><td class="n">RFC 8414</td></tr>

@@ -42,8 +42,9 @@ export interface LandingStrings {
   readonly copy: string;
   readonly copied: string;
   readonly claudeTitle: string;
-  /** `{action}` becomes the Claude button label, in English. */
+  /** `{action}` becomes the Claude navigation path, in English. */
   readonly claudeStep1: string;
+  /** `{host}` becomes a <code> span. */
   readonly claudeStep2: string;
   /** `{action}` becomes the Claude button label, in English. */
   readonly claudeStep3: string;
@@ -88,7 +89,7 @@ const de: Strings = {
     copied: 'Kopiert',
     claudeTitle: 'Verbinden aus Claude',
     claudeStep1: 'In Claude {action} öffnen.',
-    claudeStep2: 'Die obige URL mit Ihrem n8n-Hostnamen einsetzen und einfügen.',
+    claudeStep2: 'Die obige URL einfügen und {host} durch Ihren n8n-Hostnamen ersetzen.',
     claudeStep3:
       '{action} anklicken, dann Ihren Namen und Ihren persönlichen n8n-API-Key eingeben (n8n → Einstellungen → n8n API → API-Key erstellen).',
     endpointsTitle: 'Endpunkte',
@@ -154,7 +155,7 @@ const en: Strings = {
     copied: 'Copied',
     claudeTitle: 'Connecting from Claude',
     claudeStep1: 'Open {action} in Claude.',
-    claudeStep2: 'Paste the URL above with your n8n hostname filled in.',
+    claudeStep2: 'Paste the URL above and replace {host} with your n8n hostname.',
     claudeStep3:
       'Click {action}, then enter your name and your personal n8n API key (n8n → Settings → n8n API → Create an API key).',
     endpointsTitle: 'Endpoints',

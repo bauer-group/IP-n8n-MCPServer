@@ -8,6 +8,7 @@ import { clientIp } from '../src/lib/request.js';
 import { normalizePath } from '../src/middleware/security.js';
 import { errorText, pickLocale } from '../src/ui/i18n.js';
 import { consentPage, errorPage, escapeHtml } from '../src/ui/pages.js';
+import { fill } from '../src/ui/static.js';
 import { BASE_URL, createHarness, TENANT } from './helpers.js';
 
 /** Minimal Context stand-in — clientIp only reads headers and c.env. */
@@ -287,22 +288,61 @@ describe('public pages', () => {
       expect(html).not.toMatch(/textContent = 'Operational'/);
     });
 
-    it('keeps the endpoint table and Claude button labels in English', async () => {
+    it('keeps the endpoint table and Claude labels in English, and marks them so', async () => {
       // Deliberate: RFC names are terminology, and the Claude labels are quoted
-      // UI a user has to find on their own screen.
-      const html = await (await landing('de')).text();
-      expect(html).toContain('RFC 9728');
-      expect(html).toContain('liveness · readiness');
-      expect(html).toContain('<strong>Settings → Connectors → Add custom connector</strong>');
-    });
-
-    it('substitutes placeholders instead of leaking them', async () => {
+      // UI a user has to find on their own screen. lang="en" is the other half
+      // of that decision — without it a screen reader on the German page reads
+      // them with German phonetics. WCAG 2.1 AA, 3.1.2 Language of Parts.
       for (const language of ['de', 'en']) {
         const html = await (await landing(language)).text();
+        expect(html).toContain('RFC 9728');
+        expect(html).toContain('<table lang="en">');
+        expect(html).toContain(
+          '<strong lang="en">Settings → Connectors → Add custom connector</strong>',
+        );
+        expect(html).toContain('<strong lang="en">Connect</strong>');
+      }
+    });
+
+    it('substitutes every placeholder in both languages', async () => {
+      // Both directions matter. The negative catches a placeholder that failed
+      // to substitute; the positive catches one a translation dropped, which
+      // fails silently — the sentence still reads, the markup is just gone.
+      for (const language of ['de', 'en']) {
+        const html = await (await landing(language)).text();
+        const steps = html.slice(html.indexOf('<ol>'), html.indexOf('</ol>'));
+
         expect(html).toContain('<code>&lt;n8n-host&gt;</code>');
         expect(html).toContain('<code>flow.example.com</code>');
+        expect(steps).toContain('<code>&lt;n8n-host&gt;</code>');
+        expect(steps).toContain('<strong lang="en">Connect</strong>');
         expect(html).not.toMatch(/\{host\}|\{example\}|\{action\}/);
       }
+    });
+  });
+
+  describe('fill', () => {
+    it('escapes the template but not the fragments', () => {
+      // The whole point of the ordering: prose cannot introduce markup, and
+      // the caller's fragment is the only thing that arrives as HTML.
+      expect(fill('a <b> {x}', { x: '<strong>ok</strong>' })).toBe(
+        'a &lt;b&gt; <strong>ok</strong>',
+      );
+    });
+
+    it('leaves an unknown placeholder visible rather than blanking it', () => {
+      // A translation that invents a placeholder should look wrong in review,
+      // not silently lose a word.
+      expect(fill('{nope}', {})).toBe('{nope}');
+    });
+
+    it('does not resolve inherited object properties', () => {
+      // `\w+` matches `constructor` and `toString`. A bare index lookup finds
+      // those on Object.prototype and splices the result in as raw HTML —
+      // after escaping has already run, so nothing downstream neutralises it.
+      expect(fill('{constructor}', {})).toBe('{constructor}');
+      expect(fill('{toString}', {})).toBe('{toString}');
+      expect(fill('{__proto__}', {})).toBe('{__proto__}');
     });
   });
 
