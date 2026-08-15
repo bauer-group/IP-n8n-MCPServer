@@ -74,7 +74,7 @@ jobs:
       # The point of the pair is to keep `packageManager` the single source of
       # truth for the pnpm version rather than duplicating the pin here.
       - name: 📦 Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           package_json_file: app/bg-n8n-mcp/package.json
           run_install: false
