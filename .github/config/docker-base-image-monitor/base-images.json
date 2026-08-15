@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/bauer-group/automation-templates/main/.github/config/docker-base-image-monitor/docker-base-images.schema.json",
+  "_description": "Images BUILT INTO the bg-n8n-mcp container. Every entry here force-dispatches a release when its digest moves (see check-base-images.yml), so only images whose contents actually ship inside our artifact belong in this file. Deliberately absent: redis:8-alpine and ghcr.io/czlonkowski/n8n-mcp. Both are docker-compose sidecars that appear nowhere in the Dockerfile — their digests moving would produce content-free version bumps of OUR image. They are watched instead by Dependabot's docker-compose ecosystem, which opens a PR to review rather than cutting a release. That matters especially for n8n-mcp: it is a third-party image whose updates should be read before they ship.",
+  "images": [
+    {
+      "name": "node-alpine",
+      "image": "node",
+      "tag": "26-alpine",
+      "variable": "NODE_ALPINE_DIGEST",
+      "description": "Base image for the bg-n8n-mcp container (app/bg-n8n-mcp/Dockerfile, ARG NODE_VERSION)"
+    }
+  ],
+  "settings": {
+    "commit-prefix": "chore(deps)",
+    "auto-create-variables": true
+  }
+}

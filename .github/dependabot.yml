@@ -1,0 +1,99 @@
+# =============================================================================
+# Dependabot Configuration
+# =============================================================================
+# Watches:
+#   1. GitHub Actions versions (workflows pinned to @main pull module updates)
+#   2. Image references inside docker-compose*.yml files
+#   3. bg-n8n-mcp base image (node:24-alpine)
+#   4. bg-n8n-mcp npm dependencies (app/bg-n8n-mcp/package.json + pnpm-lock.yaml)
+#
+# COMMIT PREFIXES DECIDE WHETHER AN UPDATE SHIPS
+#   docker-release.yml only builds and pushes the image when semantic-release
+#   actually cuts a release (`if: needs.release.outputs.release-created`). A
+#   `chore(...)` update therefore lands on main but never reaches a published
+#   image — it rides along with whatever releasing commit happens to come next,
+#   which for a runtime dependency can be weeks.
+#
+#   So the two ecosystems that change what runs INSIDE the image use `fix(...)`
+#   and cut their own patch: the base image (3) and the npm deps (4). The two
+#   that do not are deliberately left on `chore(...)`: GitHub Actions (1) never
+#   enters the build context, and the compose files (2) describe how the image
+#   is deployed, not what it contains.
+#
+#   Note on (2): the compose files also pin ghcr.io/czlonkowski/n8n-mcp, the
+#   upstream MCP server this gateway fronts. That image is NOT built by us and
+#   is NOT in any Dockerfile, so it belongs to the compose ecosystem — a PR to
+#   review, not an automatic release.
+# =============================================================================
+
+version: 2
+updates:
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "sunday"
+      time: "06:30"
+      timezone: "Etc/UTC"
+    labels:
+      - "dependencies"
+      - "github-actions"
+      - "dependabot"
+    commit-message:
+      prefix: "chore(ci)"
+
+  # Docker Compose images (redis, and the upstream n8n-mcp image)
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "sunday"
+      time: "06:30"
+      timezone: "Etc/UTC"
+    labels:
+      - "dependencies"
+      - "docker"
+      - "dependabot"
+    commit-message:
+      prefix: "chore(deps)"
+
+  # bg-n8n-mcp base image (node:24-alpine in app/bg-n8n-mcp/Dockerfile)
+  - package-ecosystem: "docker"
+    directory: "/app/bg-n8n-mcp"
+    schedule:
+      interval: "weekly"
+      day: "sunday"
+      time: "06:30"
+      timezone: "Etc/UTC"
+    labels:
+      - "dependencies"
+      - "docker"
+      - "dependabot"
+    commit-message:
+      # fix(...) so a base-image CVE patch cuts a release and rebuilds the
+      # image itself, rather than waiting for an unrelated commit.
+      prefix: "fix(docker)"
+
+  # bg-n8n-mcp npm dependencies
+  - package-ecosystem: "npm"
+    directory: "/app/bg-n8n-mcp"
+    schedule:
+      interval: "weekly"
+      day: "sunday"
+      time: "06:30"
+      timezone: "Etc/UTC"
+    labels:
+      - "dependencies"
+      - "javascript"
+      - "dependabot"
+    commit-message:
+      # fix(...) — these packages are installed into the image, so an update
+      # that never triggers a build is an update that never ships.
+      prefix: "fix(deps)"
+    groups:
+      # Type definitions and test tooling never reach the production image
+      # (`pnpm deploy --prod` drops them), so batching them keeps the PR
+      # queue readable without delaying anything that actually ships.
+      dev-tooling:
+        dependency-type: "development"

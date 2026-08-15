@@ -1,0 +1,31 @@
+{
+  "branches": ["main"],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/changelog",
+      {
+        "changelogFile": "CHANGELOG.md"
+      }
+    ],
+    [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "sed -i -E '0,/^  \"version\": \".*\",/s//  \"version\": \"${nextRelease.version}\",/' app/bg-n8n-mcp/package.json && sed -i -E 's|^LABEL org.opencontainers.image.version=\".*\"|LABEL org.opencontainers.image.version=\"${nextRelease.version}\"|' app/bg-n8n-mcp/Dockerfile && sed -i -E 's|^ARG APP_VERSION=.*|ARG APP_VERSION=${nextRelease.version}|' app/bg-n8n-mcp/Dockerfile"
+      }
+    ],
+    [
+      "@semantic-release/git",
+      {
+        "assets": [
+          "CHANGELOG.md",
+          "app/bg-n8n-mcp/package.json",
+          "app/bg-n8n-mcp/Dockerfile"
+        ],
+        "message": "chore(release): ${nextRelease.version}\n\n${nextRelease.notes}"
+      }
+    ],
+    "@semantic-release/github"
+  ]
+}

@@ -1,0 +1,141 @@
+name: 🚀 Release & Docker Build
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '.github/**'
+      - '*.md'
+      - 'docs/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'docker-compose*.yml'
+      - '.dockerignore'
+      - '.env.example'
+  workflow_dispatch:
+    inputs:
+      force-release:
+        description: 'force create release'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  packages: write
+  security-events: write
+  # Required by docker-build.yml@main: a declared permissions block sets every
+  # unlisted scope to none, and the reusable workflow needs these three.
+  attestations: write   # write the build-provenance attestation
+  id-token: write       # OIDC token to sign it (keyless / Sigstore)
+  actions: read         # its nested security-analysis job reads run metadata
+
+jobs:
+  # ============================================
+  # Validation
+  # ============================================
+
+  validate-compose:
+    name: 🔍 Validate Docker Compose
+    uses: bauer-group/automation-templates/.github/workflows/modules-validate-compose.yml@main
+    with:
+      compose-files: '["docker-compose.coolify.yml", "docker-compose.traefik.yml", "docker-compose.development.yml"]'
+      env-file: '.env.example'
+      validate-services: '["n8n-mcp-gateway", "n8n-mcp-backend", "redis"]'
+
+  # The TypeScript gate: biome + tsc --noEmit + vitest with coverage enforced,
+  # on Node 24 and 26. Listed in the release job's `needs` below, so no tag,
+  # GitHub Release or CHANGELOG entry can be cut while the suite is red.
+  quality:
+    name: 🧪 Tests
+    uses: ./.github/workflows/tests.yml
+
+  # ============================================
+  # Release (main branch push only)
+  # ============================================
+
+  release:
+    name: 📦 Create Semantic Release
+    needs: [validate-compose, quality]
+    if: |
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      needs.validate-compose.result == 'success' &&
+      needs.quality.result == 'success'
+    uses: bauer-group/automation-templates/.github/workflows/modules-semantic-release.yml@main
+    with:
+      target-branch: 'main'
+      dry-run: false
+      force-release: ${{ inputs.force-release || false }}
+      extra-plugins: '@semantic-release/exec'
+    secrets: inherit
+
+  # ============================================
+  # Docker Build & Push (bg-n8n-mcp image)
+  # ============================================
+
+  docker-build-release:
+    name: 🐳 Build & Push bg-n8n-mcp
+    needs: release
+    if: needs.release.outputs.release-created == 'true'
+    uses: bauer-group/automation-templates/.github/workflows/docker-build.yml@main
+    with:
+      deploy-environment: 'production'
+      publish-to: 'ghcr'
+      ghcr-image-name: 'bauer-group/ip-n8n-mcpserver/bg-n8n-mcp'
+      docker-image-name: 'bauergroup/bg-n8n-mcp'
+
+      release-version: ${{ needs.release.outputs.version }}
+      image-tags: 'stable'
+
+      # semantic-release already stamps the version into package.json and the
+      # Dockerfile LABEL and commits both (see
+      # .github/config/release/semantic-release.json), so the reusable workflow
+      # must NOT also try to. When both do, its "Commit Dockerfile Version
+      # Update" step rewrites the file and then fails to pull the release
+      # commit on top of its own unstaged change — exiting 128 AFTER a
+      # perfectly good image has already been pushed.
+      update-dockerfile-version: false
+      auto-tags: true
+      latest-tag: true
+
+      dockerfile-path: './app/bg-n8n-mcp/Dockerfile'
+      docker-context: './app/bg-n8n-mcp'
+      platforms: 'linux/amd64,linux/arm64'
+
+      push: true
+
+      # Trivy runs BEFORE the push and gates it, and the template treats a scan
+      # that could not run as a finding — so this genuinely blocks a CRITICAL
+      # image from reaching GHCR rather than reporting on one that is already
+      # there.
+      security-scan: true
+      security-fail-on: 'CRITICAL'
+      generate-sbom: true
+      sync-dockerhub-readme: true
+    secrets: inherit
+
+  docker-build-pr:
+    name: 🔨 Validate bg-n8n-mcp Build (PR)
+    needs: [validate-compose, quality]
+    if: |
+      github.event_name == 'pull_request' &&
+      needs.validate-compose.result == 'success' &&
+      needs.quality.result == 'success'
+    uses: bauer-group/automation-templates/.github/workflows/docker-build.yml@main
+    with:
+      publish-to: 'ghcr'
+      ghcr-image-name: 'bauer-group/ip-n8n-mcpserver/bg-n8n-mcp'
+
+      auto-tags: true
+      dockerfile-path: './app/bg-n8n-mcp/Dockerfile'
+      docker-context: './app/bg-n8n-mcp'
+      platforms: 'linux/amd64,linux/arm64'
+
+      push: false
+
+      security-scan: false
+      security-fail-on: 'CRITICAL'
+    secrets: inherit
