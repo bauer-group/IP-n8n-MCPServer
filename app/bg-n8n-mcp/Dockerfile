@@ -97,7 +97,14 @@ RUN env -i HOME="$HOME" PATH="$PATH" CI=1 node_modules/.bin/biome check src test
 # ── Stage 4: production ──────────────────────────────────────────────────────
 FROM node:${NODE_VERSION} AS production
 
-ARG APP_VERSION=0.1.0
+# Supplied by --build-arg from the release workflow (see
+# .github/workflows/docker-release.yml). Deliberately NOT a real version: the
+# reusable build workflow checks out the commit that TRIGGERED the run, which
+# precedes semantic-release's own chore(release) commit — so anything stamped
+# into this file by that commit is invisible to the build. An image built
+# without the build-arg must therefore be obviously unversioned rather than
+# plausibly one release behind. Matches the fallback in src/main.ts.
+ARG APP_VERSION=0.0.0-dev
 
 LABEL vendor="BAUER GROUP"
 LABEL maintainer="Karl Bauer <karl.bauer@bauer-group.com>"

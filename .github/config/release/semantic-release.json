@@ -12,7 +12,7 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "sed -i -E '0,/^  \"version\": \".*\",/s//  \"version\": \"${nextRelease.version}\",/' app/bg-n8n-mcp/package.json && sed -i -E 's|^LABEL org.opencontainers.image.version=\".*\"|LABEL org.opencontainers.image.version=\"${nextRelease.version}\"|' app/bg-n8n-mcp/Dockerfile && sed -i -E 's|^ARG APP_VERSION=.*|ARG APP_VERSION=${nextRelease.version}|' app/bg-n8n-mcp/Dockerfile"
+        "prepareCmd": "sed -i -E '0,/^  \"version\": \".*\",/s//  \"version\": \"${nextRelease.version}\",/' app/bg-n8n-mcp/package.json && sed -i -E 's|^LABEL org.opencontainers.image.version=\".*\"|LABEL org.opencontainers.image.version=\"${nextRelease.version}\"|' app/bg-n8n-mcp/Dockerfile"
       }
     ],
     [

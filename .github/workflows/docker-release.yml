@@ -90,6 +90,18 @@ jobs:
       release-version: ${{ needs.release.outputs.version }}
       image-tags: 'stable'
 
+      # docker-build.yml@main checks out github.sha — the commit that TRIGGERED
+      # this run, which precedes the chore(release) commit semantic-release
+      # creates minutes later in the same run. Every version it stamps into a
+      # source file is therefore invisible to the image build: that is how
+      # 0.1.0 shipped with APP_VERSION=1.0.0 baked into its ENV.
+      #
+      # Passing it as a build arg is what closes that gap. It comes from the
+      # same output that produces the image tag, so the tag and the version the
+      # running container reports cannot diverge.
+      build-args: |
+        APP_VERSION=${{ needs.release.outputs.version }}
+
       # semantic-release already stamps the version into package.json and the
       # Dockerfile LABEL and commits both (see
       # .github/config/release/semantic-release.json), so the reusable workflow
