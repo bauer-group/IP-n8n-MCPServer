@@ -1,3 +1,12 @@
+## [0.1.1](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.1.0...v0.1.1) (2026-08-15)
+
+### 🐛 Bug Fixes
+
+* **ci:** declared amd64-only builds instead of claiming arm64 ([326d512](https://github.com/bauer-group/IP-n8n-MCPServer/commit/326d512f514e06ec93bb3e8169ace2501c814460))
+* **ci:** passed the release version to the build ([7c51c65](https://github.com/bauer-group/IP-n8n-MCPServer/commit/7c51c65abf4ebc240b0d097d28f9613883ad745c))
+* **probe:** separated edge 401 from rejected key ([b993784](https://github.com/bauer-group/IP-n8n-MCPServer/commit/b9937843ef39cf2ca68490bc005a77f1438d0912))
+* **ui:** corrected the landing page subtitle ([1ff617f](https://github.com/bauer-group/IP-n8n-MCPServer/commit/1ff617f793eb1c69ff288713f4917f5a83d6a25e))
+
 ## [0.1.0](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.0.0...v0.1.0) (2026-08-15)
 
 ### 🚀 Features
