@@ -1,3 +1,9 @@
+## [0.2.1](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.2.0...v0.2.1) (2026-08-15)
+
+### 🐛 Bug Fixes
+
+* **ui:** hardened fill and marked the English parts ([f11ef14](https://github.com/bauer-group/IP-n8n-MCPServer/commit/f11ef1476324c090e5806916eee71c05d5636eee))
+
 ## [0.2.0](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.1.2...v0.2.0) (2026-08-15)
 
 ### 🚀 Features
