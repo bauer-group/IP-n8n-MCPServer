@@ -1,0 +1,32 @@
+# =============================================================================
+# bg-n8n-mcp — image build context
+# =============================================================================
+# Everything the Dockerfile needs is COPYed explicitly, so this file exists to
+# keep the context small and to make sure a local build never picks up a
+# developer's node_modules (which would be resolved for the wrong platform).
+
+node_modules
+dist
+coverage
+*.tsbuildinfo
+
+.git
+.gitignore
+.dockerignore
+Dockerfile
+
+.env
+.env.*
+!.env.example
+
+README.md
+*.md
+
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+
+# pnpm's local store — the build resolves from pnpm-lock.yaml instead.
+.pnpm-store
+.pnpm-debug.log*
