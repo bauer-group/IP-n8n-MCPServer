@@ -61,16 +61,21 @@ jobs:
       # with Node at 25.0.0, so a corepack-based setup breaks on the Node 26
       # leg of this very matrix.
       #
-      # `version: false` makes the action take the pinned version from the
-      # `packageManager` field, keeping one source of truth. `package_json_file`
-      # is required with it: the action looks in the REPOSITORY ROOT by default,
-      # and this project's manifest lives under app/. Without it the action
-      # finds no version and fails with the memorable-but-unhelpful
-      # "Something went wrong, self-installer exits with code 1".
+      # Two non-obvious details, both of which fail loudly but unhelpfully:
+      #
+      #   * `version` is OMITTED, not set to `false`. Omitting it is what makes
+      #     the action read `packageManager` — passing `version: false`
+      #     registers as "a version was specified" and the action aborts with
+      #     "Multiple versions of pnpm specified".
+      #   * `package_json_file` is required because the action looks in the
+      #     REPOSITORY ROOT, and this project's manifest lives under app/.
+      #     Without it: "Something went wrong, self-installer exits with code 1".
+      #
+      # The point of the pair is to keep `packageManager` the single source of
+      # truth for the pnpm version rather than duplicating the pin here.
       - name: 📦 Set up pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: false
           package_json_file: app/bg-n8n-mcp/package.json
           run_install: false
 
