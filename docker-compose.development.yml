@@ -1,0 +1,179 @@
+# =============================================================================
+# n8n MCP Server — Local Development Stack
+# =============================================================================
+# Usage:  docker compose -f docker-compose.development.yml up -d --build
+#
+#   - Builds the gateway from source instead of pulling it
+#   - Publishes the gateway port directly; no reverse proxy
+#   - LOG_FORMAT=console, LOG_LEVEL=debug
+#
+# One thing does NOT work locally, by design: claude.ai cannot reach
+# http://localhost. Remote connectors are brokered from Anthropic's
+# infrastructure, so the gateway must be publicly resolvable over HTTPS for a
+# real end-to-end test. Use this stack with the MCP Inspector or curl, and
+# docker-compose.traefik.yml for anything involving a real AI client.
+# =============================================================================
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "50m"
+      max-file: "3"
+
+services:
+  n8n-mcp-gateway:
+    build:
+      context: ./app/bg-n8n-mcp
+      target: production
+      args:
+        APP_VERSION: ${N8N_MCP_VERSION:-0.0.0-dev}
+    image: ${N8N_MCP_IMAGE:-ghcr.io/bauer-group/ip-n8n-mcpserver/bg-n8n-mcp}:${N8N_MCP_VERSION:-latest}
+    container_name: ${STACK_NAME:-bg-n8n-mcp}
+    hostname: ${STACK_NAME:-bg-n8n-mcp}
+    restart: unless-stopped
+    <<: *logging
+
+    environment:
+      TZ: ${TIME_ZONE:-Etc/UTC}
+
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      # http is permitted only because ENVIRONMENT=development; the gateway
+      # refuses to start on plain http in any other environment.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+
+      MCP_HOST: ${MCP_HOST:-::}
+      MCP_PORT: ${MCP_PORT:-8080}
+      MCP_DISPLAY_NAME: ${MCP_DISPLAY_NAME:-BAUER GROUP n8n}
+
+      LOG_FORMAT: ${LOG_FORMAT:-console}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+
+      N8N_MCP_URL: http://n8n-mcp-backend:${BACKEND_PORT:-3000}
+      N8N_MCP_AUTH_TOKEN: ${N8N_MCP_AUTH_TOKEN:?N8N_MCP_AUTH_TOKEN is required}
+      N8N_MCP_TIMEOUT_MS: ${N8N_MCP_TIMEOUT_MS:-120000}
+
+      N8N_ALLOWED_HOSTS: ${N8N_ALLOWED_HOSTS:-}
+      N8N_ALLOWED_HOST_PATTERN: ${N8N_ALLOWED_HOST_PATTERN:-}
+      # Development only: lets you point at an n8n on the same Docker network
+      # or a private address. This is the SSRF guard — never true in production.
+      N8N_ALLOW_PRIVATE_ADDRESSES: ${N8N_ALLOW_PRIVATE_ADDRESSES:-true}
+      N8N_PROBE_TIMEOUT_MS: ${N8N_PROBE_TIMEOUT_MS:-8000}
+
+      AUTH_STORAGE_ENCRYPTION_KEY: ${AUTH_STORAGE_ENCRYPTION_KEY:?AUTH_STORAGE_ENCRYPTION_KEY is required}
+      # Redis is included even in development so the store behaves the same as
+      # production. Leave AUTH_REDIS_URL empty to use the in-memory store
+      # instead — grants are then lost on every restart.
+      AUTH_REDIS_URL: ${AUTH_REDIS_URL:-redis://redis:6379/0}
+      AUTH_ACCESS_TOKEN_TTL: ${AUTH_ACCESS_TOKEN_TTL:-3600}
+      AUTH_REFRESH_TOKEN_TTL: ${AUTH_REFRESH_TOKEN_TTL:-2592000}
+      MCP_ALLOWED_CLIENT_REDIRECT_URIS: ${MCP_ALLOWED_CLIENT_REDIRECT_URIS:-}
+
+      RATE_LIMITER_ENABLED: ${RATE_LIMITER_ENABLED:-false}
+      # No proxy in front, so X-Forwarded-For is entirely client-controlled and
+      # must be ignored.
+      RATE_LIMITER_TRUSTED_PROXY_HOPS: ${RATE_LIMITER_TRUSTED_PROXY_HOPS:-0}
+
+    depends_on:
+      redis:
+        condition: service_healthy
+      n8n-mcp-backend:
+        condition: service_started
+
+    ports:
+      - "${N8N_MCP_PORT:-8000}:${MCP_PORT:-8080}"
+
+    networks:
+      - local
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:${MCP_PORT:-8080}/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+
+  n8n-mcp-backend:
+    image: ${BACKEND_IMAGE:-ghcr.io/czlonkowski/n8n-mcp}:${BACKEND_VERSION:-2.69.2}
+    container_name: ${STACK_NAME:-bg-n8n-mcp}-backend
+    restart: unless-stopped
+    <<: *logging
+
+    environment:
+      TZ: ${TIME_ZONE:-Etc/UTC}
+      NODE_ENV: production
+
+      MCP_MODE: http
+      PORT: ${BACKEND_PORT:-3000}
+      AUTH_TOKEN: ${N8N_MCP_AUTH_TOKEN:?N8N_MCP_AUTH_TOKEN is required}
+      ENABLE_MULTI_TENANT: "true"
+      # No N8N_API_URL / N8N_API_KEY here either — see the traefik compose file
+      # for why that absence is deliberate rather than an oversight.
+
+      MULTI_TENANT_SESSION_STRATEGY: ${MULTI_TENANT_SESSION_STRATEGY:-instance}
+      MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS: ${MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS:-true}
+      N8N_MCP_MAX_SESSIONS: ${BACKEND_MAX_SESSIONS:-50}
+
+      TRUST_PROXY: "1"
+      AUTH_RATE_LIMIT_MAX: ${BACKEND_AUTH_RATE_LIMIT_MAX:-1000}
+      AUTH_RATE_LIMIT_WINDOW: ${BACKEND_AUTH_RATE_LIMIT_WINDOW:-900000}
+
+      # `permissive` lets you target an n8n on the same Docker network
+      # (http://n8n:5678) or a private address. Development only.
+      WEBHOOK_SECURITY_MODE: ${WEBHOOK_SECURITY_MODE:-permissive}
+
+      DISABLED_TOOLS: ${DISABLED_TOOLS:-}
+      DISABLED_TOOL_OPERATIONS: ${DISABLED_TOOL_OPERATIONS:-}
+      LOG_LEVEL: ${BACKEND_LOG_LEVEL:-debug}
+
+    expose:
+      - ${BACKEND_PORT:-3000}
+
+    ports:
+      - "${BACKEND_HOST_PORT:-3000}:${BACKEND_PORT:-3000}"
+
+    networks:
+      - local
+
+
+  redis:
+    image: ${REDIS_IMAGE:-redis}:${REDIS_VERSION:-8-alpine}
+    container_name: ${STACK_NAME:-bg-n8n-mcp}-redis
+    restart: unless-stopped
+    <<: *logging
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-128mb}
+      - --maxmemory-policy
+      - noeviction
+    mem_limit: ${REDIS_CONTAINER_MEM_LIMIT:-192m}
+    expose:
+      - 6379
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - local
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+
+volumes:
+  redis-data:
+    driver: local
+    name: ${STACK_NAME:-bg-n8n-mcp}-redis
+
+
+networks:
+  local:
+    driver: bridge
+    name: ${STACK_NAME:-bg-n8n-mcp}
+    enable_ipv6: true

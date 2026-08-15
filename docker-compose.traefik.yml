@@ -1,0 +1,278 @@
+# =============================================================================
+# n8n MCP Server — Production Stack (Traefik Reverse Proxy)
+# =============================================================================
+# Usage:  docker compose -f docker-compose.traefik.yml up -d
+#
+# Prerequisites:
+#   - Traefik v2/v3 running on the ${PROXY_NETWORK} network
+#   - DNS record: ${N8N_MCP_HOSTNAME} -> this host (A record; see note below)
+#   - Each user has a personal n8n API key (n8n -> Settings -> n8n API)
+#
+# Architecture:
+#
+#        AI clients (Claude Web / Desktop / Code, Copilot, Cursor, ...)
+#                              |  HTTPS, OAuth 2.1 + PKCE
+#                              v
+#                        +-----------+
+#                        |  Traefik  |   proxy network (external)
+#                        +-----+-----+
+#                              |
+#        +---------------------v-----------------------------+
+#        |  n8n-mcp-gateway   (this project)                 |  local network
+#        |    - OAuth AS + protected resource                |  (private)
+#        |    - per-user n8n API keys, sealed at rest        |
+#        +---------------------+-----------------------------+
+#                              |  x-n8n-url / x-n8n-key
+#        +---------------------v-----------------------------+
+#        |  n8n-mcp-backend   (ghcr.io/czlonkowski/n8n-mcp)  |
+#        |    ENABLE_MULTI_TENANT=true, no ambient creds     |
+#        +---------------------+-----------------------------+
+#                              |  HTTPS
+#                              v
+#                     each user's own n8n instance
+#
+# Only the gateway is ever reachable from outside. The backend has no route,
+# no published port, and no process-level n8n credentials.
+# =============================================================================
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "50m"
+      max-file: "3"
+
+services:
+  # ── The OAuth gateway: the only service Traefik sees ───────────────────────
+  n8n-mcp-gateway:
+    image: ${N8N_MCP_IMAGE:-ghcr.io/bauer-group/ip-n8n-mcpserver/bg-n8n-mcp}:${N8N_MCP_VERSION:-latest}
+    container_name: ${STACK_NAME:-bg-n8n-mcp}
+    hostname: ${STACK_NAME:-bg-n8n-mcp}
+    restart: unless-stopped
+    <<: *logging
+
+    environment:
+      TZ: ${TIME_ZONE:-Etc/UTC}
+
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
+
+      MCP_HOST: ${MCP_HOST:-::}
+      MCP_PORT: ${MCP_PORT:-8080}
+      MCP_DISPLAY_NAME: ${MCP_DISPLAY_NAME:-BAUER GROUP n8n}
+      MCP_WEBSITE_URL: ${MCP_WEBSITE_URL:-https://go.bauer-group.com/mcp-server}
+
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+      # Internal address of the backend. Never leaves this network.
+      N8N_MCP_URL: http://n8n-mcp-backend:${BACKEND_PORT:-3000}
+      N8N_MCP_AUTH_TOKEN: ${N8N_MCP_AUTH_TOKEN:?N8N_MCP_AUTH_TOKEN is required}
+      N8N_MCP_TIMEOUT_MS: ${N8N_MCP_TIMEOUT_MS:-120000}
+
+      # Which n8n instances may be addressed. At least one of these must be set
+      # or the gateway refuses to start.
+      N8N_ALLOWED_HOSTS: ${N8N_ALLOWED_HOSTS:-}
+      N8N_ALLOWED_HOST_PATTERN: ${N8N_ALLOWED_HOST_PATTERN:-}
+      N8N_ALLOW_PRIVATE_ADDRESSES: ${N8N_ALLOW_PRIVATE_ADDRESSES:-false}
+      N8N_PROBE_TIMEOUT_MS: ${N8N_PROBE_TIMEOUT_MS:-8000}
+
+      AUTH_STORAGE_ENCRYPTION_KEY: ${AUTH_STORAGE_ENCRYPTION_KEY:?AUTH_STORAGE_ENCRYPTION_KEY is required}
+      AUTH_REDIS_URL: ${AUTH_REDIS_URL:-redis://redis:6379/0}
+      AUTH_ACCESS_TOKEN_TTL: ${AUTH_ACCESS_TOKEN_TTL:-3600}
+      AUTH_REFRESH_TOKEN_TTL: ${AUTH_REFRESH_TOKEN_TTL:-2592000}
+      AUTH_CODE_TTL: ${AUTH_CODE_TTL:-120}
+      AUTH_CLIENT_TTL: ${AUTH_CLIENT_TTL:-31536000}
+      # Empty = any MCP client may register (see .env.example for why).
+      MCP_ALLOWED_CLIENT_REDIRECT_URIS: ${MCP_ALLOWED_CLIENT_REDIRECT_URIS:-}
+
+      RATE_LIMITER_ENABLED: ${RATE_LIMITER_ENABLED:-true}
+      RATE_LIMITER_LOGIN_MAX: ${RATE_LIMITER_LOGIN_MAX:-10}
+      RATE_LIMITER_LOGIN_WINDOW: ${RATE_LIMITER_LOGIN_WINDOW:-900}
+      RATE_LIMITER_TOKEN_MAX: ${RATE_LIMITER_TOKEN_MAX:-60}
+      RATE_LIMITER_TOKEN_WINDOW: ${RATE_LIMITER_TOKEN_WINDOW:-60}
+      RATE_LIMITER_MCP_MAX: ${RATE_LIMITER_MCP_MAX:-600}
+      RATE_LIMITER_MCP_WINDOW: ${RATE_LIMITER_MCP_WINDOW:-60}
+      # 1 = a single Traefik in front. Bump to 2 if Cloudflare (or another
+      # edge) sits in front of Traefik — this decides which X-Forwarded-For
+      # entry is trusted, and getting it wrong lets a caller spoof their way
+      # out of every rate limit here.
+      RATE_LIMITER_TRUSTED_PROXY_HOPS: ${RATE_LIMITER_TRUSTED_PROXY_HOPS:-1}
+
+    depends_on:
+      redis:
+        condition: service_healthy
+      n8n-mcp-backend:
+        condition: service_started
+
+    expose:
+      - ${MCP_PORT:-8080}
+
+    networks:
+      - proxy
+      - local
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:${MCP_PORT:-8080}/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${PROXY_NETWORK:-EDGEPROXY}"
+
+      # HTTP -> HTTPS
+      - "traefik.http.middlewares.${STACK_NAME:-bg-n8n-mcp}-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.${STACK_NAME:-bg-n8n-mcp}-redirect.redirectscheme.permanent=true"
+      - "traefik.http.routers.${STACK_NAME:-bg-n8n-mcp}-http.rule=Host(`${N8N_MCP_HOSTNAME}`)"
+      - "traefik.http.routers.${STACK_NAME:-bg-n8n-mcp}-http.entrypoints=web"
+      - "traefik.http.routers.${STACK_NAME:-bg-n8n-mcp}-http.middlewares=${STACK_NAME:-bg-n8n-mcp}-redirect"
+
+      # Defence in depth. The gateway strips these itself — this stops a
+      # client-supplied tenant header one hop earlier, so a bug in that code
+      # is not the only thing standing between a caller and someone else's n8n.
+      # An empty value means Traefik removes the header.
+      - "traefik.http.middlewares.${STACK_NAME:-bg-n8n-mcp}-strip.headers.customrequestheaders.X-N8n-Url="
+      - "traefik.http.middlewares.${STACK_NAME:-bg-n8n-mcp}-strip.headers.customrequestheaders.X-N8n-Key="
+      - "traefik.http.middlewares.${STACK_NAME:-bg-n8n-mcp}-strip.headers.customrequestheaders.X-Instance-Id="
+      - "traefik.http.middlewares.${STACK_NAME:-bg-n8n-mcp}-strip.headers.customrequestheaders.X-Session-Id="
+
+      # HTTPS
+      - "traefik.http.routers.${STACK_NAME:-bg-n8n-mcp}-app.rule=Host(`${N8N_MCP_HOSTNAME}`)"
+      - "traefik.http.routers.${STACK_NAME:-bg-n8n-mcp}-app.entrypoints=web-secure"
+      - "traefik.http.routers.${STACK_NAME:-bg-n8n-mcp}-app.tls=true"
+      - "traefik.http.routers.${STACK_NAME:-bg-n8n-mcp}-app.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.${STACK_NAME:-bg-n8n-mcp}-app.middlewares=${STACK_NAME:-bg-n8n-mcp}-strip"
+      - "traefik.http.routers.${STACK_NAME:-bg-n8n-mcp}-app.service=${STACK_NAME:-bg-n8n-mcp}-app"
+      - "traefik.http.services.${STACK_NAME:-bg-n8n-mcp}-app.loadBalancer.server.port=${MCP_PORT:-8080}"
+      # MCP responses can be Server-Sent Events held open for the length of a
+      # tool call. Traefik must not buffer them, or the first frame arrives
+      # only when the stream ends — which reads to the user as a hung tool.
+      - "traefik.http.services.${STACK_NAME:-bg-n8n-mcp}-app.loadBalancer.responseForwarding.flushInterval=1ms"
+
+  # ── The upstream MCP server: internal only, no Traefik route ───────────────
+  n8n-mcp-backend:
+    image: ${BACKEND_IMAGE:-ghcr.io/czlonkowski/n8n-mcp}:${BACKEND_VERSION:-2.69.2}
+    container_name: ${STACK_NAME:-bg-n8n-mcp}-backend
+    restart: unless-stopped
+    <<: *logging
+
+    environment:
+      TZ: ${TIME_ZONE:-Etc/UTC}
+      NODE_ENV: production
+
+      MCP_MODE: http
+      PORT: ${BACKEND_PORT:-3000}
+
+      # The gateway is this service's only client, and holds the only copy of
+      # this token.
+      AUTH_TOKEN: ${N8N_MCP_AUTH_TOKEN:?N8N_MCP_AUTH_TOKEN is required}
+
+      # Per-request tenant selection via x-n8n-url / x-n8n-key.
+      ENABLE_MULTI_TENANT: "true"
+
+      # N8N_API_URL / N8N_API_KEY are DELIBERATELY ABSENT. With multi-tenant on
+      # and no process-level credentials there is nothing for a request to fall
+      # back to — which is exactly the failure that GHSA-jxx9-px88-pj69
+      # describes (requests missing the tenant headers silently ran against the
+      # operator's own n8n). Fixed upstream in 2.51.2; do not pin below that.
+
+      # Each connected user gets their own session, keyed by the per-grant
+      # x-instance-id the gateway sends. With the default 'instance' strategy
+      # and a per-tenant id instead, one user connecting would evict every
+      # other user of the same n8n instance.
+      MULTI_TENANT_SESSION_STRATEGY: ${MULTI_TENANT_SESSION_STRATEGY:-instance}
+      # Off by default: one grant = one session, and a reconnect cleans up the
+      # previous one. Turn on if a single grant needs several live sessions.
+      MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS: ${MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS:-false}
+      N8N_MCP_MAX_SESSIONS: ${BACKEND_MAX_SESSIONS:-200}
+
+      # The backend sees every request arriving from the gateway's container IP.
+      # TRUST_PROXY=1 makes it read the real client address from the
+      # X-Forwarded-For the gateway sets, so its own limiter counts users rather
+      # than counting the gateway.
+      TRUST_PROXY: "1"
+      # Its limiter counts FAILED requests per IP (successes are skipped), so
+      # the default of 20/15min is about brute force, not throughput. Raised
+      # because the gateway aggregates many users; the real per-user budget is
+      # RATE_LIMITER_MCP_MAX on the gateway.
+      AUTH_RATE_LIMIT_MAX: ${BACKEND_AUTH_RATE_LIMIT_MAX:-100}
+      AUTH_RATE_LIMIT_WINDOW: ${BACKEND_AUTH_RATE_LIMIT_WINDOW:-900000}
+
+      # strict blocks localhost, private ranges and cloud metadata endpoints
+      # for the tenant URL. Keep it, and reach your n8n instances over public
+      # HTTPS. Loosening it makes the gateway's own allowlist the only SSRF
+      # control left.
+      WEBHOOK_SECURITY_MODE: ${WEBHOOK_SECURITY_MODE:-strict}
+
+      # Optional guardrails, comma-separated. For a read-only deployment:
+      #   DISABLED_TOOLS=n8n_delete_workflow,n8n_delete_execution
+      DISABLED_TOOLS: ${DISABLED_TOOLS:-}
+      DISABLED_TOOL_OPERATIONS: ${DISABLED_TOOL_OPERATIONS:-}
+
+      LOG_LEVEL: ${BACKEND_LOG_LEVEL:-info}
+
+    expose:
+      - ${BACKEND_PORT:-3000}
+
+    networks:
+      - local
+
+    labels:
+      - "traefik.enable=false"
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${BACKEND_PORT:-3000}/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+  redis:
+    image: ${REDIS_IMAGE:-redis}:${REDIS_VERSION:-8-alpine}
+    container_name: ${STACK_NAME:-bg-n8n-mcp}-redis
+    restart: unless-stopped
+    <<: *logging
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-256mb}
+      # noeviction, not allkeys-lru: evicting a key here silently logs a user
+      # out mid-session. Running out of memory should be an alert, not a
+      # mysterious disconnection.
+      - --maxmemory-policy
+      - noeviction
+    mem_limit: ${REDIS_CONTAINER_MEM_LIMIT:-384m}
+    mem_reservation: 64m
+    expose:
+      - 6379
+    volumes:
+      - redis-data:/data
+    networks:
+      - local
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+
+volumes:
+  redis-data:
+    driver: local
+    name: ${STACK_NAME:-bg-n8n-mcp}-redis
+
+
+networks:
+  local:
+    driver: bridge
+    name: ${STACK_NAME:-bg-n8n-mcp}
+    enable_ipv6: true
+
+  proxy:
+    name: ${PROXY_NETWORK:-EDGEPROXY}
+    external: true
