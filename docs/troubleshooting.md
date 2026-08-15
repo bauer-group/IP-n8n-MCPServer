@@ -95,8 +95,40 @@ window when iterating on `scopes_supported` or the issuer, and do not chase
 
 ### "Dieser API-Key wird von der Instanz abgelehnt" / "rejected"
 
-n8n answered 401. The key is wrong, deleted or from a different instance. Create
-a new one: n8n → Settings → n8n API.
+n8n itself answered 401 — a bare one, with no `WWW-Authenticate` challenge. The
+key is wrong, deleted or from a different instance. Create a new one: n8n →
+Settings → n8n API. If the 401 *did* carry a challenge, you get `proxy_auth`
+instead; see below, and do not create keys for it.
+
+### "Vor dieser Instanz sitzt ein Proxy mit eigener Anmeldung" / `proxy_auth`
+
+Something in front of n8n — a Basic-Auth'd nginx, an OAuth2 proxy, a WAF —
+answered `/api/v1/*` itself, so the key was never seen by n8n. The tell is an
+HTTP authentication challenge on the 401; n8n's public API never sends one.
+
+```bash
+# From anywhere. No key needed: if this challenges, so did the gateway's probe.
+curl -sI https://flow.kunde-a.app.bauer-group.com/api/v1/workflows?limit=1
+# HTTP/1.1 401 Unauthorized
+# WWW-Authenticate: Basic realm=""      ← the edge, not n8n
+# Server: nginx
+```
+
+The fix belongs on the instance, not here: exempt `/api/v1/` from that login,
+the same way `/webhook/` and `/rest/` usually already are. The public API
+authenticates every request against `X-N8N-API-KEY` on its own — it is not an
+unprotected path.
+
+```nginx
+location /api/ {
+    auth_basic off;          # n8n's public API brings its own auth
+    proxy_pass http://n8n;
+}
+```
+
+An n8n API key **cannot** carry Basic-Auth credentials, so no key the user
+creates will ever get through. This is why `proxy_auth` neither counts toward
+the lockout nor revokes a grant on refresh.
 
 ### "Der Key ist gültig, das Konto darf aber keine Workflows lesen" / 403
 

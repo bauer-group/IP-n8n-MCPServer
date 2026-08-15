@@ -144,7 +144,16 @@ describe('i18n', () => {
   });
 
   it('has a message for every failure code both languages share', () => {
-    for (const code of ['bad_key', 'api_disabled', 'unreachable', 'not_n8n', 'expired']) {
+    for (const code of [
+      'bad_key',
+      'insufficient_permissions',
+      'proxy_auth',
+      'api_disabled',
+      'rate_limited',
+      'unreachable',
+      'not_n8n',
+      'expired',
+    ]) {
       expect(errorText('de', code)).not.toBe(code);
       expect(errorText('en', code)).not.toBe(code);
     }

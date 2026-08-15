@@ -78,9 +78,10 @@ export async function validateCredential(
     return {
       ok: false,
       code: probe.code,
-      // 403 is deliberately NOT counted: the key is real, the account just
-      // lacks a permission. Locking that user out sends them round a loop
-      // that cannot succeed.
+      // Only a verdict from n8n itself counts. 403 does not: the key is real,
+      // the account just lacks a permission. Nor does `proxy_auth`, where an
+      // edge answered before n8n and the key was never judged at all. Locking
+      // either user out sends them round a loop that cannot succeed.
       countsAsFailure: probe.code === 'bad_key',
       detail: probe.detail,
     };

@@ -2,10 +2,11 @@
  * Validating a user's n8n API key against their instance.
  *
  * Runs once before any token is issued, and again (cheaply) on refresh. The
- * point is not just "is this key good" — it is to tell the four failure modes
- * apart, because they need four different answers from the login form:
+ * point is not just "is this key good" — it is to tell the failure modes apart,
+ * because they need different answers from the login form:
  *
  *   wrong key        → make a new one in n8n
+ *   edge wants auth  → exempt /api/v1/ from the proxy's own login
  *   public API off   → ask your instance admin to enable it
  *   host unreachable → is the instance up, and public over HTTPS?
  *   not n8n at all   → wrong address
@@ -17,6 +18,7 @@
 export type ProbeFailure =
   | 'bad_key'
   | 'insufficient_permissions'
+  | 'proxy_auth'
   | 'api_disabled'
   | 'rate_limited'
   | 'unreachable'
@@ -35,6 +37,25 @@ interface ProbeOptions {
   readonly timeoutMs: number;
   /** Injectable for tests. Defaults to the global fetch. */
   readonly fetchImpl?: typeof fetch;
+}
+
+/**
+ * The scheme of an HTTP authentication challenge on the response, or null.
+ *
+ * This is the one signal that separates "n8n rejected the key" from "the key
+ * never reached n8n". n8n's public API answers a bad key with a bare JSON body
+ * and **no** challenge header — technically a violation of RFC 9110 §15.5.2,
+ * which requires one on a 401, but a consistent violation, and the discriminator
+ * we get for free because of it. A challenge therefore comes from something in
+ * front of n8n: a Basic-Auth'd nginx, an OAuth2 proxy, a WAF.
+ */
+function authChallengeScheme(response: Response): string | null {
+  const raw =
+    response.headers.get('www-authenticate') ?? response.headers.get('proxy-authenticate');
+  if (!raw) return null;
+  // Only the scheme is taken. The rest of a challenge is attacker-influenced
+  // free text of unbounded length, and it goes into an operator's log line.
+  return (raw.trim().split(/[\s,]/)[0] || 'unknown').slice(0, 32);
 }
 
 async function readBounded(response: Response, limit: number): Promise<string | null> {
@@ -105,6 +126,26 @@ export async function probeApiKey(
       ok: false,
       code: 'not_n8n',
       detail: `redirect (${response.status}) instead of an API response`,
+    };
+  }
+
+  // A 401 has two possible authors, and telling them apart is the difference
+  // between "create a new key" and "fix your reverse proxy". An edge that fronts
+  // n8n with its own login (Basic auth, an OAuth2 proxy) answers `/api/v1/*`
+  // before n8n does, and the key is never seen by n8n at all. Reading that as
+  // `bad_key` sends the user to mint key after key into a loop no key can leave
+  // — while the lockout counter, which `bad_key` feeds, runs down.
+  //
+  // 407 is the same situation stated explicitly, challenge header or not.
+  const challenge = authChallengeScheme(response);
+  if (response.status === 407 || (response.status === 401 && challenge)) {
+    await response.body?.cancel().catch(() => undefined);
+    return {
+      ok: false,
+      code: 'proxy_auth',
+      detail:
+        `an HTTP layer in front of n8n demanded its own credentials ` +
+        `(${response.status}, ${challenge ?? 'no challenge header'}); the API key never reached n8n`,
     };
   }
 

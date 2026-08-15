@@ -50,6 +50,8 @@ const de: Strings = {
       'Dieser API-Key wird von der Instanz abgelehnt. Bitte in n8n unter Einstellungen → n8n API einen neuen Key erzeugen.',
     insufficient_permissions:
       'Der Key ist gültig, das Konto darf aber keine Workflows lesen. Bitte an die Administration der Instanz wenden.',
+    proxy_auth:
+      'Vor dieser Instanz sitzt ein Proxy mit eigener Anmeldung — Ihr API-Key wurde nie an n8n weitergereicht. Die Administration der Instanz muss den Pfad /api/v1/ von dieser Anmeldung ausnehmen. Ein neuer Key hilft hier nicht.',
     api_disabled:
       'Auf dieser Instanz ist die Public API nicht aktiviert. Bitte an die Administration der Instanz wenden.',
     rate_limited:
@@ -91,6 +93,8 @@ const en: Strings = {
       'The instance rejected this API key. Create a new one in n8n under Settings → n8n API.',
     insufficient_permissions:
       'The key is valid but the account may not read workflows. Ask the instance administrator for access.',
+    proxy_auth:
+      'A proxy in front of this instance asks for its own login, so your API key never reached n8n. Ask the instance administrator to exempt /api/v1/ from that login. A new key will not help.',
     api_disabled:
       'The public API is not enabled on this instance. Ask the instance administrator to enable it.',
     rate_limited: 'The instance rejected too many requests. Please try again in a few minutes.',

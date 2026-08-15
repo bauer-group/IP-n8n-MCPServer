@@ -19,7 +19,7 @@ docker compose -f docker-compose.traefik.yml logs -f n8n-mcp-gateway | jq
 | `authorize_unknown_client` | warn | `/authorize` with an unregistered `client_id` |
 | `authorize_bad_redirect` | warn | `redirect_uri` did not match the registration |
 | `authorize_tenant_rejected` | warn | `resource` named a host outside the allowlist |
-| `credential_rejected` | warn | Consent failed. `code` says which of the seven reasons. |
+| `credential_rejected` | warn | Consent failed. `code` says which reason; `detail` is the operator-facing version. |
 | `login_rate_limited` | warn | Lockout tripped |
 | `consent_granted` | **info** | A grant was created. Carries `username`, `host`, `n8n_user`, `grant_id`. |
 | `token_issued` | info | `grant: code` or `grant: refresh` |

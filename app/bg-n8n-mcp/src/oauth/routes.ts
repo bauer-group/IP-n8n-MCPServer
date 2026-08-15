@@ -471,8 +471,10 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
     // rather than keep working for the rest of the refresh window.
     //
     // Two asymmetries, both deliberate:
-    //  - Only a hard rejection (401) revokes. An unreachable instance must not
-    //    log out every user of that instance during a maintenance window.
+    //  - Only a verdict from n8n on the key itself revokes. An unreachable
+    //    instance must not log out every user of that instance during a
+    //    maintenance window — and neither must an edge that started demanding
+    //    its own login (`proxy_auth`), which says nothing about the key.
     //  - The probe timeout is capped well below the ~30s a client allows for a
     //    refresh, because blowing that budget fails the refresh anyway — and
     //    then looks like our bug rather than a slow n8n.

@@ -117,6 +117,54 @@ describe('probeApiKey', () => {
     expect(result).toEqual(expect.objectContaining({ ok: false, code }));
   });
 
+  it('reads a 401 carrying an auth challenge as the edge, not as a bad key', async () => {
+    // A Basic-Auth'd nginx in front of n8n answers /api/v1/* itself, so the key
+    // is never judged. Reporting `bad_key` would send the user to mint keys
+    // forever and would spend their lockout budget doing it.
+    const result = await probeWith(
+      async () =>
+        new Response('<html>401 Authorization Required</html>', {
+          status: 401,
+          headers: { 'www-authenticate': 'Basic realm=""', 'content-type': 'text/html' },
+        }),
+    );
+    expect(result).toEqual(expect.objectContaining({ ok: false, code: 'proxy_auth' }));
+  });
+
+  it('still reads a bare 401 as a bad key', async () => {
+    // n8n's own rejection: JSON, no challenge header.
+    const result = await probeWith(
+      async () =>
+        new Response(JSON.stringify({ message: 'unauthorized' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    expect(result).toEqual(expect.objectContaining({ ok: false, code: 'bad_key' }));
+  });
+
+  it('reads a 407 as the edge even without a challenge header', async () => {
+    const result = await probeWith(async () => new Response('', { status: 407 }));
+    expect(result).toEqual(expect.objectContaining({ ok: false, code: 'proxy_auth' }));
+  });
+
+  it('logs only the challenge scheme, not the whole header', async () => {
+    // A challenge is unbounded attacker-influenced text that lands in an
+    // operator's log line.
+    const result = await probeWith(
+      async () =>
+        new Response('', {
+          status: 401,
+          headers: { 'www-authenticate': `Basic realm="${'x'.repeat(4000)}"` },
+        }),
+    );
+    expect(result).toMatchObject({ ok: false, code: 'proxy_auth' });
+    if (!result.ok) {
+      expect(result.detail).toContain('Basic');
+      expect(result.detail.length).toBeLessThan(200);
+    }
+  });
+
   it('treats a redirect as "no API here" rather than retrying it', async () => {
     const result = await probeWith(
       async () => new Response('', { status: 302, headers: { location: 'https://elsewhere' } }),
