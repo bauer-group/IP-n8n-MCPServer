@@ -1,3 +1,11 @@
+## [0.1.2](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.1.1...v0.1.2) (2026-08-15)
+
+### 🐛 Bug Fixes
+
+* **oauth:** claimed the consent request atomically ([125ea49](https://github.com/bauer-group/IP-n8n-MCPServer/commit/125ea4922d2e8e03912ef21ce992d0fbdd050781))
+* **probe:** named both causes of an API 404 ([e82f17f](https://github.com/bauer-group/IP-n8n-MCPServer/commit/e82f17feccc2e2273e63dbaf99e9d3bc3568ee36))
+* **tenant:** bounded and cached DNS resolution ([8bc9f74](https://github.com/bauer-group/IP-n8n-MCPServer/commit/8bc9f74488defd2a02cb3589205551de4e68ee94))
+
 ## [0.1.1](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.1.0...v0.1.1) (2026-08-15)
 
 ### 🐛 Bug Fixes
