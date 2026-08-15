@@ -53,7 +53,7 @@ const de: Strings = {
     proxy_auth:
       'Vor dieser Instanz sitzt ein Proxy mit eigener Anmeldung — Ihr API-Key wurde nie an n8n weitergereicht. Die Administration der Instanz muss den Pfad /api/v1/ von dieser Anmeldung ausnehmen. Ein neuer Key hilft hier nicht.',
     api_disabled:
-      'Auf dieser Instanz ist die Public API nicht aktiviert. Bitte an die Administration der Instanz wenden.',
+      'Unter /api/v1 antwortet keine API. Entweder ist die Public API auf dieser Instanz nicht aktiviert, oder für diesen Hostnamen ist derzeit nichts erreichbar — etwa weil der Container gestoppt ist. Bitte an die Administration der Instanz wenden.',
     rate_limited:
       'Die Instanz hat zu viele Anfragen abgelehnt. Bitte in einigen Minuten erneut versuchen.',
     unreachable:
@@ -96,7 +96,7 @@ const en: Strings = {
     proxy_auth:
       'A proxy in front of this instance asks for its own login, so your API key never reached n8n. Ask the instance administrator to exempt /api/v1/ from that login. A new key will not help.',
     api_disabled:
-      'The public API is not enabled on this instance. Ask the instance administrator to enable it.',
+      'Nothing answers at /api/v1. Either the public API is not enabled on this instance, or nothing is currently routed for this hostname — a stopped container, say. Ask the instance administrator.',
     rate_limited: 'The instance rejected too many requests. Please try again in a few minutes.',
     unreachable:
       'The instance is not reachable right now. Is it running, and publicly reachable over HTTPS?',

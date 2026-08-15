@@ -166,10 +166,18 @@ export async function probeApiKey(
     };
   }
 
-  // n8n answers 404 across /api/v1/* when the public API is switched off.
+  // n8n answers 404 across /api/v1/* when the public API is switched off — but
+  // so does a reverse proxy with no route for this host, which is what a
+  // stopped or undeployed container looks like from out here. The two are not
+  // distinguishable from the status alone, and guessing wrong sends the user
+  // to an administrator with the wrong request, so the message names both.
   if (response.status === 404) {
     await response.body?.cancel().catch(() => undefined);
-    return { ok: false, code: 'api_disabled', detail: 'public API not enabled on this instance' };
+    return {
+      ok: false,
+      code: 'api_disabled',
+      detail: 'no API at /api/v1 (public API switched off, or nothing routed for this host)',
+    };
   }
 
   if (response.status === 429) {
