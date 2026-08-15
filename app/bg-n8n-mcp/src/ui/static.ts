@@ -121,7 +121,7 @@ export function landingPage(config: Config, version: string, nonce: string): str
   <div class="head">
     <img src="/logo.svg" alt="BAUER GROUP" width="62" height="62">
     <h1>${escapeHtml(config.MCP_DISPLAY_NAME)} MCP Server</h1>
-    <p class="sub">OAuth 2.1 gateway for n8n — every user connects with their own n8n API key.</p>
+    <p class="sub">OAuth 2.1 MCP server for n8n — every user connects with their own n8n API key.</p>
   </div>
 
   <div class="grid">
