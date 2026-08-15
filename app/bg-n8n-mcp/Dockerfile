@@ -97,7 +97,7 @@ RUN env -i HOME="$HOME" PATH="$PATH" CI=1 node_modules/.bin/biome check src test
 # ── Stage 4: production ──────────────────────────────────────────────────────
 FROM node:${NODE_VERSION} AS production
 
-ARG APP_VERSION=1.0.0
+ARG APP_VERSION=0.1.0
 
 LABEL vendor="BAUER GROUP"
 LABEL maintainer="Karl Bauer <karl.bauer@bauer-group.com>"
@@ -112,7 +112,7 @@ LABEL org.opencontainers.image.documentation="https://github.com/bauer-group/IP-
 LABEL org.opencontainers.image.description="bg-n8n-mcp — OAuth 2.1 gateway making n8n-mcp usable as a remote connector, with per-user n8n API keys (BAUER GROUP)"
 LABEL com.bauer-group.image.component="mcp-server"
 LABEL com.bauer-group.image.stack="n8n"
-LABEL org.opencontainers.image.version="1.0.0"
+LABEL org.opencontainers.image.version="0.1.0"
 
 RUN apk add --no-cache tini tzdata ca-certificates curl \
  && rm -rf /var/cache/apk/* \
