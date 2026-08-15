@@ -26,6 +26,7 @@ import { cors, requestContext, securityHeaders } from './middleware/security.js'
 import { createOAuthRoutes } from './oauth/routes.js';
 import { createMcpProxy } from './proxy/mcp.js';
 import type { Store } from './store/index.js';
+import { pickLocale } from './ui/i18n.js';
 import { landingPage, logoSvg } from './ui/static.js';
 
 export interface AppEnv {
@@ -59,7 +60,10 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   app.get('/', (c) => {
     const nonce = randomBytes(16).toString('base64');
     c.set('cspNonce', nonce);
-    return c.html(landingPage(config, version, nonce));
+    // Same negotiation the consent screen uses. Without it this page stayed
+    // English while the login it links to came back in German, which reads as
+    // a broken translation rather than the scope gap it was.
+    return c.html(landingPage(config, version, nonce, pickLocale(c.req.header('accept-language'))));
   });
 
   app.get('/logo.svg', (c) => {

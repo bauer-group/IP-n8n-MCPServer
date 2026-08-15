@@ -14,7 +14,33 @@
  */
 
 import type { Config } from '../config.js';
+import { type Locale, strings } from './i18n.js';
 import { escapeHtml } from './pages.js';
+
+/**
+ * Escape a translated string, then substitute markup for its `{placeholders}`.
+ *
+ * The order is the point: the prose is escaped as the untrusted-shaped thing it
+ * is, and only the fragments supplied here — authored next to the call, never
+ * in the string table — arrive as HTML. A translator cannot introduce markup,
+ * and a translation that drops a placeholder loses formatting rather than
+ * breaking the page.
+ */
+function fill(template: string, parts: Readonly<Record<string, string>>): string {
+  return escapeHtml(template).replace(/\{(\w+)\}/g, (whole, key: string) => parts[key] ?? whole);
+}
+
+/**
+ * JSON for embedding directly in a `<script>` element.
+ *
+ * `<` is escaped because the HTML parser looks for `</script` inside script
+ * content before any JavaScript runs: a string containing it would end the
+ * element early. Nothing in the string table contains one today, which is
+ * exactly when this is cheap to get right.
+ */
+function jsonForScript(value: unknown): string {
+  return JSON.stringify(value).replace(/</g, '\\u003c');
+}
 
 /** BAUER GROUP mark. */
 export function logoSvg(): string {
@@ -102,12 +128,18 @@ td.n{color:var(--text-muted);text-align:right;font-size:.82rem}
  * gateway serves many n8n instances and the list of which ones is not public
  * information.
  */
-export function landingPage(config: Config, version: string, nonce: string): string {
+export function landingPage(
+  config: Config,
+  version: string,
+  nonce: string,
+  locale: Locale,
+): string {
   const pattern = `${config.baseUrl}/i/<n8n-host>/mcp`;
   const env = escapeHtml(config.ENVIRONMENT);
+  const t = strings(locale).landing;
 
   return `<!doctype html>
-<html lang="en">
+<html lang="${locale}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -121,48 +153,51 @@ export function landingPage(config: Config, version: string, nonce: string): str
   <div class="head">
     <img src="/logo.svg" alt="BAUER GROUP" width="62" height="62">
     <h1>${escapeHtml(config.MCP_DISPLAY_NAME)} MCP Server</h1>
-    <p class="sub">OAuth 2.1 MCP server for n8n — every user connects with their own n8n API key.</p>
+    <p class="sub">${escapeHtml(t.subtitle)}</p>
   </div>
 
   <div class="grid">
     <div class="tile">
-      <div class="k">Status</div>
-      <div class="v"><span id="status" class="pill"><span class="dot"></span><span id="status-text">checking…</span></span></div>
+      <div class="k">${escapeHtml(t.statusLabel)}</div>
+      <div class="v"><span id="status" class="pill"><span class="dot"></span><span id="status-text">${escapeHtml(t.statusChecking)}</span></span></div>
     </div>
     <div class="tile">
-      <div class="k">Version</div>
+      <div class="k">${escapeHtml(t.versionLabel)}</div>
       <div class="v">${escapeHtml(version)}</div>
     </div>
     <div class="tile">
-      <div class="k">Environment</div>
+      <div class="k">${escapeHtml(t.environmentLabel)}</div>
       <div class="v"><span class="pill">${env}</span></div>
     </div>
   </div>
 
   <section>
-    <h2>Connector URL</h2>
+    <h2>${escapeHtml(t.connectorUrlTitle)}</h2>
     <p style="color:var(--text-muted);font-size:.93rem;margin-bottom:.7rem">
-      One connector per n8n instance. Replace <code>&lt;n8n-host&gt;</code> with the hostname of your
-      n8n instance — for example <code>flow.example.com</code>.
+      ${fill(t.connectorUrlIntro, {
+        host: '<code>&lt;n8n-host&gt;</code>',
+        example: '<code>flow.example.com</code>',
+      })}
     </p>
     <div class="copy">
-      <input id="url" type="text" readonly value="${escapeHtml(pattern)}" aria-label="Connector URL pattern" spellcheck="false">
-      <button id="copy" type="button">Copy</button>
+      <input id="url" type="text" readonly value="${escapeHtml(pattern)}" aria-label="${escapeHtml(t.urlFieldLabel)}" spellcheck="false">
+      <button id="copy" type="button">${escapeHtml(t.copy)}</button>
     </div>
   </section>
 
   <section>
-    <h2>Connecting from Claude</h2>
+    <h2>${escapeHtml(t.claudeTitle)}</h2>
     <ol>
-      <li>Settings → Connectors → <strong>Add custom connector</strong>.</li>
-      <li>Paste the URL above with your n8n hostname filled in.</li>
-      <li>Click <strong>Connect</strong>, then enter your name and your personal n8n API key
-          (n8n → Settings → n8n API → Create an API key).</li>
+      <li>${fill(t.claudeStep1, {
+        action: '<strong>Settings → Connectors → Add custom connector</strong>',
+      })}</li>
+      <li>${escapeHtml(t.claudeStep2)}</li>
+      <li>${fill(t.claudeStep3, { action: '<strong>Connect</strong>' })}</li>
     </ol>
   </section>
 
   <section>
-    <h2>Endpoints</h2>
+    <h2>${escapeHtml(t.endpointsTitle)}</h2>
     <table>
       <tr><td class="m"><span class="method">ALL</span></td><td class="p">/i/&lt;n8n-host&gt;/mcp</td><td class="n">MCP, OAuth-gated</td></tr>
       <tr><td class="m"><span class="method">GET</span></td><td class="p">/.well-known/oauth-protected-resource/i/&lt;n8n-host&gt;/mcp</td><td class="n">RFC 9728</td></tr>
@@ -173,10 +208,21 @@ export function landingPage(config: Config, version: string, nonce: string): str
 
   <p class="foot">
     &copy; <span id="year">2026</span> BAUER GROUP ·
-    <a href="https://github.com/bauer-group/IP-n8n-MCPServer#readme" rel="noopener noreferrer">Documentation</a>
+    <a href="https://github.com/bauer-group/IP-n8n-MCPServer#readme" rel="noopener noreferrer">${escapeHtml(t.documentation)}</a>
   </p>
 </main>
 <script nonce="${escapeHtml(nonce)}">
+// Every string this script writes into the page comes from the server-side
+// table, not from literals here — otherwise the status pill and the copy
+// button would stay English on an otherwise translated page.
+const T = ${jsonForScript({
+    operational: t.statusOperational,
+    degraded: t.statusDegraded,
+    offline: t.statusOffline,
+    copy: t.copy,
+    copied: t.copied,
+  })};
+
 document.getElementById('year').textContent = new Date().getFullYear();
 
 const pill = document.getElementById('status');
@@ -186,10 +232,10 @@ async function poll() {
     const r = await fetch('/readyz', { cache: 'no-store' });
     const ok = r.ok;
     pill.className = 'pill ' + (ok ? 'ok' : 'warn');
-    label.textContent = ok ? 'Operational' : 'Degraded';
+    label.textContent = ok ? T.operational : T.degraded;
   } catch {
     pill.className = 'pill err';
-    label.textContent = 'Offline';
+    label.textContent = T.offline;
   }
 }
 poll();
@@ -200,8 +246,8 @@ const button = document.getElementById('copy');
 button.addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(input.value); }
   catch { input.select(); }
-  button.textContent = 'Copied';
-  setTimeout(() => { button.textContent = 'Copy'; }, 1500);
+  button.textContent = T.copied;
+  setTimeout(() => { button.textContent = T.copy; }, 1500);
 });
 </script>
 </body>

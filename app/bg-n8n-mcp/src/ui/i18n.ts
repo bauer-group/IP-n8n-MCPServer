@@ -1,19 +1,58 @@
 /**
- * Two-language string table for the consent screen.
+ * Two-language string table for the pages a person actually reads: the consent
+ * screen, the error page, and the prose on the landing page.
  *
  * German first because that is the operator's and most users' language; English
  * because a gateway that serves several n8n instances will sooner or later
  * serve someone who does not read German. Selected from `Accept-Language`,
  * which costs nothing and is right often enough — there is no locale to
- * remember here, the page is seen once per connector.
+ * remember here, and these pages are seen once per connector.
  *
  * The table is exhaustive by type: adding a key to `de` fails the build until
  * `en` has it too.
+ *
+ * **Two things deliberately stay English.** The landing page's endpoint table
+ * (`RFC 9728`, `/.well-known/…`, `liveness · readiness`) is terminology whose
+ * translation costs searchability and buys nothing. And the labels naming
+ * buttons inside Claude — `Add custom connector`, `Connect` — are quoted UI,
+ * not prose: a user hunting for a German word that is not on their screen is
+ * worse off than one reading an English word that is.
+ *
+ * Landing strings carrying `{placeholder}` are plain text on purpose. The
+ * template escapes them and then substitutes markup for each placeholder, so
+ * no HTML ever lives in this file.
  */
 
 export type Locale = 'de' | 'en';
 
+/** Prose on the landing page. See the note above on what is not here. */
+export interface LandingStrings {
+  readonly subtitle: string;
+  readonly statusLabel: string;
+  readonly statusChecking: string;
+  readonly statusOperational: string;
+  readonly statusDegraded: string;
+  readonly statusOffline: string;
+  readonly versionLabel: string;
+  readonly environmentLabel: string;
+  readonly connectorUrlTitle: string;
+  /** `{host}` and `{example}` become <code> spans. */
+  readonly connectorUrlIntro: string;
+  readonly urlFieldLabel: string;
+  readonly copy: string;
+  readonly copied: string;
+  readonly claudeTitle: string;
+  /** `{action}` becomes the Claude button label, in English. */
+  readonly claudeStep1: string;
+  readonly claudeStep2: string;
+  /** `{action}` becomes the Claude button label, in English. */
+  readonly claudeStep3: string;
+  readonly endpointsTitle: string;
+  readonly documentation: string;
+}
+
 export interface Strings {
+  readonly landing: LandingStrings;
   readonly connectTitle: string;
   readonly connectIntro: string;
   readonly instanceLabel: string;
@@ -31,6 +70,30 @@ export interface Strings {
 }
 
 const de: Strings = {
+  landing: {
+    subtitle:
+      'OAuth-2.1-MCP-Server für n8n — jeder Nutzer verbindet sich mit seinem eigenen n8n-API-Key.',
+    statusLabel: 'Status',
+    statusChecking: 'wird geprüft …',
+    statusOperational: 'Betriebsbereit',
+    statusDegraded: 'Eingeschränkt',
+    statusOffline: 'Nicht erreichbar',
+    versionLabel: 'Version',
+    environmentLabel: 'Umgebung',
+    connectorUrlTitle: 'Connector-URL',
+    connectorUrlIntro:
+      'Ein Connector pro n8n-Instanz. Ersetzen Sie {host} durch den Hostnamen Ihrer n8n-Instanz — zum Beispiel {example}.',
+    urlFieldLabel: 'Vorlage der Connector-URL',
+    copy: 'Kopieren',
+    copied: 'Kopiert',
+    claudeTitle: 'Verbinden aus Claude',
+    claudeStep1: 'In Claude {action} öffnen.',
+    claudeStep2: 'Die obige URL mit Ihrem n8n-Hostnamen einsetzen und einfügen.',
+    claudeStep3:
+      '{action} anklicken, dann Ihren Namen und Ihren persönlichen n8n-API-Key eingeben (n8n → Einstellungen → n8n API → API-Key erstellen).',
+    endpointsTitle: 'Endpunkte',
+    documentation: 'Dokumentation',
+  },
   connectTitle: 'n8n verbinden',
   connectIntro:
     'Melden Sie sich mit Ihrem persönlichen n8n-API-Key an. Der Key wird verschlüsselt gespeichert und niemals an den KI-Client weitergegeben.',
@@ -74,6 +137,29 @@ const de: Strings = {
 };
 
 const en: Strings = {
+  landing: {
+    subtitle: 'OAuth 2.1 MCP server for n8n — every user connects with their own n8n API key.',
+    statusLabel: 'Status',
+    statusChecking: 'checking…',
+    statusOperational: 'Operational',
+    statusDegraded: 'Degraded',
+    statusOffline: 'Offline',
+    versionLabel: 'Version',
+    environmentLabel: 'Environment',
+    connectorUrlTitle: 'Connector URL',
+    connectorUrlIntro:
+      'One connector per n8n instance. Replace {host} with the hostname of your n8n instance — for example {example}.',
+    urlFieldLabel: 'Connector URL pattern',
+    copy: 'Copy',
+    copied: 'Copied',
+    claudeTitle: 'Connecting from Claude',
+    claudeStep1: 'Open {action} in Claude.',
+    claudeStep2: 'Paste the URL above with your n8n hostname filled in.',
+    claudeStep3:
+      'Click {action}, then enter your name and your personal n8n API key (n8n → Settings → n8n API → Create an API key).',
+    endpointsTitle: 'Endpoints',
+    documentation: 'Documentation',
+  },
   connectTitle: 'Connect n8n',
   connectIntro:
     'Sign in with your personal n8n API key. It is stored encrypted and is never handed to the AI client.',

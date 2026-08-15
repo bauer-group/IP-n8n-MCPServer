@@ -252,6 +252,60 @@ describe('public pages', () => {
     expect(await (await harness.fetch('/')).text()).not.toContain(TENANT);
   });
 
+  describe('landing page language', () => {
+    const landing = (acceptLanguage?: string) =>
+      harness.fetch('/', acceptLanguage ? { headers: { 'accept-language': acceptLanguage } } : {});
+
+    it('answers a German browser in German', async () => {
+      const response = await landing('de-DE,de;q=0.9,en;q=0.8');
+      const html = await response.text();
+      expect(html).toContain('lang="de"');
+      expect(html).toContain('jeder Nutzer verbindet sich');
+      expect(html).toContain('Verbinden aus Claude');
+    });
+
+    it('answers an English browser in English', async () => {
+      const html = await (await landing('en-GB,en;q=0.9')).text();
+      expect(html).toContain('lang="en"');
+      expect(html).toContain('every user connects with their own');
+      expect(html).toContain('Connecting from Claude');
+    });
+
+    it('falls back to German when the browser states no preference', async () => {
+      // Same default as the consent screen, so the two pages cannot disagree.
+      const html = await (await landing()).text();
+      expect(html).toContain('lang="de"');
+    });
+
+    it('hands the localized labels to the script rather than hardcoding them', async () => {
+      // The status pill and the copy button are written by client-side JS. If
+      // those strings stayed as literals in the script, a translated page would
+      // still flip to "Operational" a second after it loaded.
+      const html = await (await landing('de')).text();
+      expect(html).toContain('Betriebsbereit');
+      expect(html).toContain('Kopiert');
+      expect(html).not.toMatch(/textContent = 'Operational'/);
+    });
+
+    it('keeps the endpoint table and Claude button labels in English', async () => {
+      // Deliberate: RFC names are terminology, and the Claude labels are quoted
+      // UI a user has to find on their own screen.
+      const html = await (await landing('de')).text();
+      expect(html).toContain('RFC 9728');
+      expect(html).toContain('liveness · readiness');
+      expect(html).toContain('<strong>Settings → Connectors → Add custom connector</strong>');
+    });
+
+    it('substitutes placeholders instead of leaking them', async () => {
+      for (const language of ['de', 'en']) {
+        const html = await (await landing(language)).text();
+        expect(html).toContain('<code>&lt;n8n-host&gt;</code>');
+        expect(html).toContain('<code>flow.example.com</code>');
+        expect(html).not.toMatch(/\{host\}|\{example\}|\{action\}/);
+      }
+    });
+  });
+
   it('serves the logo', async () => {
     const response = await harness.fetch('/logo.svg');
     expect(response.headers.get('content-type')).toContain('image/svg+xml');
