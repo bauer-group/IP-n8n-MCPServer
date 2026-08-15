@@ -136,8 +136,20 @@ sessions** on that header, or a client's second request lands on a replica that
 has never heard of its session. Until you need that, run one backend and scale
 the gateway.
 
-`N8N_MCP_MAX_SESSIONS` (default 200 here) caps concurrent backend sessions
-across all tenants. Each connected client holds one.
+`N8N_MCP_MAX_SESSIONS` caps concurrent backend sessions across all tenants.
+This stack sets it to 200 via `BACKEND_MAX_SESSIONS`; n8n-mcp's own default is
+100, so the compose files raise it rather than restate it.
+
+The unit is the **grant**, not the user and not the n8n instance: the gateway
+derives `x-instance-id` from the grant id, so one grant holds at most one
+concurrent session. A user who connects the same instance from two different
+MCP clients authorizes twice, and that is two grants. An idle grant costs
+nothing — sessions are reaped after `SESSION_TIMEOUT_MINUTES` (upstream default
+30), so the live count tracks clients active in a rolling half-hour, not grants
+in Redis.
+
+At the ceiling the backend answers HTTP 429 / JSON-RPC `-32000` and evicts
+nothing, so the cap is a wall rather than a queue.
 
 ---
 
@@ -196,5 +208,12 @@ re-reads config at runtime can drift into a state no config file describes.
 
 **"A user connected twice and the first session died."**
 Expected with `MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS=false`. One grant means
-one live backend session, and reconnecting cleans up the previous one. Set it to
-`true` if a single connector genuinely needs several concurrent sessions.
+one live backend session, and reconnecting under **that same grant** cleans up
+the previous one. Set it to `true` if a single connector genuinely needs several
+concurrent sessions.
+
+Note the scope: the cleanup matches on `x-instance-id`, which is derived from
+the grant id. Re-*authorizing* mints a new grant and therefore a new id, so the
+superseded session is not matched and lingers until the idle reaper takes it.
+That is bounded and harmless, but it is why session counts can briefly exceed
+the number of connected clients.

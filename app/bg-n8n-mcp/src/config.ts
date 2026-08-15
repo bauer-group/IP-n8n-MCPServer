@@ -113,7 +113,15 @@ const EnvSchema = z.object({
    */
   N8N_ALLOW_PRIVATE_ADDRESSES: boolFromEnv.default(false),
 
-  /** Timeout for the key-validation probe against the user's n8n instance. */
+  /**
+   * Timeout for the key-validation probe against the user's n8n instance.
+   *
+   * Applies in full only to the interactive login, where a human is waiting on
+   * the consent form. The refresh path caps it at 5s (see oauth/routes.ts),
+   * because a refresh runs inside an MCP client's own budget and blowing that
+   * fails the refresh anyway. Raising this above 5000 therefore changes login
+   * alone; lowering it below 5000 tightens both.
+   */
   N8N_PROBE_TIMEOUT_MS: intFromEnv(1_000, 60_000).default(8_000),
 
   // ── OAuth ─────────────────────────────────────────────────────────────────

@@ -1,9 +1,10 @@
 # bg-n8n-mcp — BAUER GROUP n8n MCP Server
 
-> **OAuth 2.1 gateway** that turns [n8n-mcp](https://github.com/czlonkowski/n8n-mcp)
-> into a **remote connector** — usable directly from Claude Web, Claude Desktop,
-> Claude Code, Microsoft 365 Copilot, Cursor and Continue, with **every user
-> connecting under their own n8n API key**.
+> **OAuth 2.1 MCP server for n8n** — it fronts
+> [n8n-mcp](https://github.com/czlonkowski/n8n-mcp) as a **remote connector**,
+> usable directly from Claude Web, Claude Desktop, Claude Code, Microsoft 365
+> Copilot, Cursor and Continue, with **every user connecting under their own n8n
+> API key**.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Docker Image](https://img.shields.io/badge/ghcr.io-bg--n8n--mcp-blue?logo=docker)](https://github.com/bauer-group/IP-n8n-MCPServer/pkgs/container/ip-n8n-mcpserver%2Fbg-n8n-mcp)

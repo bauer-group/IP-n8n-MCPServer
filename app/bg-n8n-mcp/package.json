@@ -3,7 +3,7 @@
   "version": "0.1.1",
   "private": true,
   "type": "module",
-  "description": "BAUER GROUP n8n MCP Server — OAuth 2.1 gateway that makes n8n-mcp usable as a remote connector, with each user's own n8n API key",
+  "description": "BAUER GROUP n8n MCP Server — OAuth 2.1 MCP server for n8n, fronting n8n-mcp as a remote connector with each user's own n8n API key",
   "license": "MIT",
   "author": "BAUER GROUP <info@bauer-group.com>",
   "contributors": [

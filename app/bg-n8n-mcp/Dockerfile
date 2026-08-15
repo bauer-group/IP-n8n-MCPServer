@@ -1,9 +1,9 @@
 # =============================================================================
 # bg-n8n-mcp — BAUER GROUP n8n MCP Server
 # =============================================================================
-# OAuth 2.1 gateway that puts n8n-mcp behind a remote-connector-compatible
-# authorization server, with each user authenticating using their own personal
-# n8n API key. Node 26 + Hono, streamable-http passthrough.
+# OAuth 2.1 MCP server for n8n: it puts n8n-mcp behind a remote-connector-
+# compatible authorization server, with each user authenticating using their own
+# personal n8n API key. Node 26 + Hono, streamable-http passthrough.
 #
 # Multi-stage build with an integrated test gate:
 #
@@ -116,7 +116,7 @@ LABEL org.opencontainers.image.authors="Karl Bauer <karl.bauer@bauer-group.com>"
 LABEL org.opencontainers.image.source="https://github.com/bauer-group/IP-n8n-MCPServer"
 LABEL org.opencontainers.image.url="https://github.com/bauer-group/IP-n8n-MCPServer"
 LABEL org.opencontainers.image.documentation="https://github.com/bauer-group/IP-n8n-MCPServer#readme"
-LABEL org.opencontainers.image.description="bg-n8n-mcp — OAuth 2.1 gateway making n8n-mcp usable as a remote connector, with per-user n8n API keys (BAUER GROUP)"
+LABEL org.opencontainers.image.description="bg-n8n-mcp — OAuth 2.1 MCP server for n8n, fronting n8n-mcp as a remote connector with per-user n8n API keys (BAUER GROUP)"
 LABEL com.bauer-group.image.component="mcp-server"
 LABEL com.bauer-group.image.stack="n8n"
 LABEL org.opencontainers.image.version="0.1.1"
