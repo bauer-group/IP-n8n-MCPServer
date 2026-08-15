@@ -1,3 +1,9 @@
+## [0.2.0](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.1.2...v0.2.0) (2026-08-15)
+
+### 🚀 Features
+
+* **ui:** localized the landing page prose ([8225a42](https://github.com/bauer-group/IP-n8n-MCPServer/commit/8225a42b05b44c0acb74977c512be3d95cd17795))
+
 ## [0.1.2](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.1.1...v0.1.2) (2026-08-15)
 
 ### 🐛 Bug Fixes
