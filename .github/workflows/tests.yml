@@ -59,12 +59,19 @@ jobs:
 
       # Installed from npm, not through Corepack: Corepack stopped shipping
       # with Node at 25.0.0, so a corepack-based setup breaks on the Node 26
-      # leg of this very matrix. `version: false` makes the action read the
-      # pinned version from package.json's `packageManager` field.
+      # leg of this very matrix.
+      #
+      # `version: false` makes the action take the pinned version from the
+      # `packageManager` field, keeping one source of truth. `package_json_file`
+      # is required with it: the action looks in the REPOSITORY ROOT by default,
+      # and this project's manifest lives under app/. Without it the action
+      # finds no version and fails with the memorable-but-unhelpful
+      # "Something went wrong, self-installer exits with code 1".
       - name: 📦 Set up pnpm
         uses: pnpm/action-setup@v4
         with:
           version: false
+          package_json_file: app/bg-n8n-mcp/package.json
           run_install: false
 
       - name: ⚙️ Set up Node ${{ matrix.node }}
