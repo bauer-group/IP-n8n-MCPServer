@@ -7,11 +7,33 @@
 | A public hostname with an **A record** | Remote connectors are brokered from Anthropic's infrastructure, not from the user's machine. An AAAA-only host is unreachable for them, and split-horizon DNS or a private address fails before any HTTP request is made — with nothing in your logs. |
 | TLS in front of the container | OAuth over plain HTTP leaks the authorization code and every token. The gateway refuses to start on `http://` outside `ENVIRONMENT=development`. |
 | Docker + Compose v2 | All three deploy flavours are compose stacks. |
+| An **x86-64 (amd64)** host | The published image is amd64-only. ARM hosts — Graviton, Ampere, a Raspberry Pi — cannot pull it. See below. |
 | n8n instances reachable over **public HTTPS** | With `WEBHOOK_SECURITY_MODE=strict` (the default, and the one to keep) the backend refuses private and loopback targets. |
 | A personal n8n API key per user | n8n → Settings → n8n API → Create an API key. Not an admin key, not a shared one. |
 
 No IdP registration, no OAuth application to create anywhere. The gateway *is*
 the authorization server.
+
+### Architecture support
+
+The published image is **`linux/amd64` only**:
+
+```bash
+docker buildx imagetools inspect ghcr.io/bauer-group/ip-n8n-mcpserver/bg-n8n-mcp:latest
+# → application/vnd.oci.image.manifest.v1+json  (a single image, not a manifest list)
+```
+
+ARM hosts fail at `docker pull` with a "no matching manifest" error. That is a
+limitation of the shared build pipeline rather than of this application —
+nothing in the dependency tree is architecture-specific, so a local build works
+fine on ARM:
+
+```bash
+docker build -t bg-n8n-mcp:local ./app/bg-n8n-mcp
+```
+
+Then point `N8N_MCP_IMAGE`/`N8N_MCP_VERSION` at that tag, or use
+`docker-compose.development.yml`, which builds from source anyway.
 
 ---
 

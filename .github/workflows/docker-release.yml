@@ -103,7 +103,11 @@ jobs:
 
       dockerfile-path: './app/bg-n8n-mcp/Dockerfile'
       docker-context: './app/bg-n8n-mcp'
-      platforms: 'linux/amd64,linux/arm64'
+
+      # amd64 only. 'linux/amd64,linux/arm64' here built amd64 alone and
+      # published a single-platform manifest — the template drops the second
+      # platform (same in IP-ZAMMAD-MCPServer and IP-Shlink-MCPServer).
+      platforms: 'linux/amd64'
 
       push: true
 
@@ -132,7 +136,8 @@ jobs:
       auto-tags: true
       dockerfile-path: './app/bg-n8n-mcp/Dockerfile'
       docker-context: './app/bg-n8n-mcp'
-      platforms: 'linux/amd64,linux/arm64'
+      # Matches the release job — amd64 only.
+      platforms: 'linux/amd64'
 
       push: false
 
