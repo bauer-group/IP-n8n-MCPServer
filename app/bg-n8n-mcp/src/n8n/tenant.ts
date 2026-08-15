@@ -155,39 +155,81 @@ export function isPublicAddress(address: string): boolean {
  * into an amplifier the moment a client loops.
  */
 const RESOLUTION_TTL_MS = 60_000;
+/**
+ * Failures are cached too, but briefly.
+ *
+ * Not caching them at all is the worse bug it looks like a safe choice: a
+ * resolver having a bad minute is then re-asked on every single attempt, and
+ * an unresolvable host is the one case the login path does NOT count toward
+ * the lockout — so the retries are unthrottled by design. Ten seconds is long
+ * enough to collapse a burst onto one query and short enough that a host
+ * coming back is not held down for a noticeable time.
+ */
+const RESOLUTION_FAILURE_TTL_MS = 10_000;
+/**
+ * How long we WAIT for the resolver. Not how long it takes.
+ *
+ * `dns.lookup` is getaddrinfo on a libuv thread and takes no signal, so this
+ * deadline abandons the wait, not the work: the thread stays occupied until
+ * the C call returns. That matters because the pool is small (4 by default),
+ * which is why the volume gate on POST /authorize exists — bounding the wait
+ * without bounding the callers would just move the queue.
+ *
+ * A healthy lookup is single-digit milliseconds; 3s is ~100x that and still
+ * leaves the 8s probe budget room inside a wait a human will sit through.
+ */
+const RESOLUTION_TIMEOUT_MS = 3_000;
 const RESOLUTION_CACHE_MAX = 512;
-const resolutionCache = new Map<string, { until: number; ok: boolean }>();
+/** `null` = could not resolve. Distinct from `false` = resolved, not public. */
+const resolutionCache = new Map<string, { until: number; result: boolean | null }>();
 
 /** Drop cached DNS verdicts. Test seam; also useful from a future admin route. */
 export function clearTenantCache(): void {
   resolutionCache.clear();
 }
 
-async function addressesArePublic(hostname: string): Promise<boolean | null> {
-  const cached = resolutionCache.get(hostname);
-  if (cached && cached.until > Date.now()) return cached.ok;
-
-  let records: Array<{ address: string }>;
+/** Resolve, or give up waiting. Null on failure, empty result, or deadline. */
+async function lookupWithDeadline(hostname: string): Promise<Array<{ address: string }> | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    records = await lookup(hostname, { all: true, verbatim: true });
-  } catch {
-    return null; // NXDOMAIN / SERVFAIL / timeout — caller reports 'unresolvable'
+    const records = await Promise.race([
+      lookup(hostname, { all: true, verbatim: true }).catch(() => null),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), RESOLUTION_TIMEOUT_MS);
+        // Never hold the process open for a lookup nobody is waiting on.
+        timer.unref?.();
+      }),
+    ]);
+    return records?.length ? records : null;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  if (!records.length) return null;
+}
 
-  // EVERY address must be public. A name that publishes one public and one
-  // private record is the classic DNS-rebinding setup, and accepting it
-  // because the first record looked fine is how that attack succeeds.
-  const ok = records.every((record) => isPublicAddress(record.address));
-
+function remember(hostname: string, result: boolean | null): void {
   if (resolutionCache.size >= RESOLUTION_CACHE_MAX) {
     // Cheap bound: drop the oldest insertion. This cache exists to damp query
     // volume, not to be an LRU, and a miss costs one resolver round trip.
     const oldest = resolutionCache.keys().next();
     if (!oldest.done) resolutionCache.delete(oldest.value);
   }
-  resolutionCache.set(hostname, { until: Date.now() + RESOLUTION_TTL_MS, ok });
-  return ok;
+  const ttl = result === null ? RESOLUTION_FAILURE_TTL_MS : RESOLUTION_TTL_MS;
+  resolutionCache.set(hostname, { until: Date.now() + ttl, result });
+}
+
+async function addressesArePublic(hostname: string): Promise<boolean | null> {
+  const cached = resolutionCache.get(hostname);
+  if (cached && cached.until > Date.now()) return cached.result;
+
+  const records = await lookupWithDeadline(hostname);
+
+  // EVERY address must be public. A name that publishes one public and one
+  // private record is the classic DNS-rebinding setup, and accepting it
+  // because the first record looked fine is how that attack succeeds.
+  const result = records === null ? null : records.every((r) => isPublicAddress(r.address));
+
+  remember(hostname, result);
+  return result;
 }
 
 /**
