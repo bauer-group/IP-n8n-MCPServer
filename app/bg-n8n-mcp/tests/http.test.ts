@@ -1,0 +1,263 @@
+/**
+ * Request helpers, security headers, HTML escaping and the public pages.
+ */
+
+import type { Context } from 'hono';
+import { describe, expect, it } from 'vitest';
+import { clientIp } from '../src/lib/request.js';
+import { normalizePath } from '../src/middleware/security.js';
+import { errorText, pickLocale } from '../src/ui/i18n.js';
+import { consentPage, errorPage, escapeHtml } from '../src/ui/pages.js';
+import { BASE_URL, createHarness, TENANT } from './helpers.js';
+
+/** Minimal Context stand-in — clientIp only reads headers and c.env. */
+function ctx(headers: Record<string, string>, remoteAddress = '10.0.0.1'): Context {
+  return {
+    req: { header: (name: string) => headers[name.toLowerCase()] },
+    env: { incoming: { socket: { remoteAddress } } },
+  } as unknown as Context;
+}
+
+describe('clientIp', () => {
+  it('ignores X-Forwarded-For when no proxy is configured', () => {
+    // With hops=0 the header is entirely client-controlled.
+    expect(clientIp(ctx({ 'x-forwarded-for': '1.2.3.4' }), 0)).toBe('10.0.0.1');
+  });
+
+  it('takes the entry our own proxy appended, not the leftmost', () => {
+    // The left end of X-Forwarded-For is whatever the caller wrote. Trusting it
+    // hands every rate limit in this server to anyone willing to set a header.
+    expect(clientIp(ctx({ 'x-forwarded-for': '9.9.9.9, 203.0.113.7' }), 1)).toBe('203.0.113.7');
+  });
+
+  it('walks further right for a stacked edge proxy', () => {
+    expect(clientIp(ctx({ 'x-forwarded-for': '9.9.9.9, 203.0.113.7, 172.16.0.1' }), 2)).toBe(
+      '203.0.113.7',
+    );
+  });
+
+  it('falls back to the socket when the chain is shorter than configured', () => {
+    // A short chain means the request did not arrive the expected way; trusting
+    // it would let an attacker choose their own bucket.
+    expect(clientIp(ctx({ 'x-forwarded-for': '9.9.9.9' }), 3)).toBe('10.0.0.1');
+  });
+
+  it('tolerates whitespace and empty entries', () => {
+    expect(clientIp(ctx({ 'x-forwarded-for': ' 1.1.1.1 ,  203.0.113.7 ' }), 1)).toBe('203.0.113.7');
+  });
+
+  it('reports "unknown" rather than throwing with no socket', () => {
+    expect(clientIp({ req: { header: () => undefined }, env: {} } as unknown as Context, 0)).toBe(
+      'unknown',
+    );
+  });
+});
+
+describe('normalizePath', () => {
+  it('lowercases the path but leaves the query alone', () => {
+    const normalized = normalizePath(
+      new Request('https://mcp.test.example/I/Flow.ACME.example/MCP?State=AbC'),
+    );
+    const url = new URL(normalized.url);
+    expect(url.pathname).toBe('/i/flow.acme.example/mcp');
+    expect(url.search).toBe('?State=AbC');
+  });
+
+  it('returns the same object when nothing changes', () => {
+    const request = new Request('https://mcp.test.example/healthz');
+    expect(normalizePath(request)).toBe(request);
+  });
+
+  it('preserves method and headers', () => {
+    const normalized = normalizePath(
+      new Request('https://mcp.test.example/I/x/MCP', {
+        method: 'POST',
+        headers: { authorization: 'Bearer t' },
+        body: '{}',
+      }),
+    );
+    expect(normalized.method).toBe('POST');
+    expect(normalized.headers.get('authorization')).toBe('Bearer t');
+  });
+});
+
+describe('escapeHtml', () => {
+  it('neutralises the characters that break out of text and attributes', () => {
+    expect(escapeHtml('<script>alert("x")</script>')).toBe(
+      '&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;',
+    );
+    expect(escapeHtml("it's & more")).toBe('it&#39;s &amp; more');
+  });
+});
+
+describe('consentPage', () => {
+  const base = {
+    locale: 'de' as const,
+    displayName: 'BAUER GROUP n8n',
+    hostname: TENANT,
+    clientName: null,
+    requestId: 'req-1',
+    username: '',
+    error: null,
+  };
+
+  it('renders the three inputs of the concept: instance, username, key', () => {
+    const html = consentPage(base);
+    expect(html).toContain(TENANT);
+    expect(html).toContain('name="username"');
+    expect(html).toContain('name="api_key"');
+    expect(html).toContain('type="password"');
+  });
+
+  it('escapes a hostile client name', () => {
+    // client_name comes straight from an unauthenticated registration request.
+    const html = consentPage({ ...base, clientName: '<img src=x onerror=alert(1)>' });
+    expect(html).not.toContain('<img src=x');
+    expect(html).toContain('&lt;img src=x');
+  });
+
+  it('keeps the typed username after a failed attempt', () => {
+    const html = consentPage({ ...base, username: 'kb@example.com', error: 'nope' });
+    expect(html).toContain('value="kb@example.com"');
+    expect(html).toContain('nope');
+  });
+
+  it('posts back to /authorize', () => {
+    expect(consentPage(base)).toContain('action="/authorize"');
+  });
+});
+
+describe('errorPage', () => {
+  it('escapes the message', () => {
+    expect(errorPage('en', 'App', '<b>x</b>')).toContain('&lt;b&gt;x&lt;/b&gt;');
+  });
+});
+
+describe('i18n', () => {
+  it('picks German by default and English when asked', () => {
+    expect(pickLocale(undefined)).toBe('de');
+    expect(pickLocale('en-GB,en;q=0.9')).toBe('en');
+    expect(pickLocale('de-AT,de;q=0.9')).toBe('de');
+    expect(pickLocale('fr-FR')).toBe('de');
+    // First recognised tag wins, in header order.
+    expect(pickLocale('fr,en;q=0.8,de;q=0.7')).toBe('en');
+  });
+
+  it('has a message for every failure code both languages share', () => {
+    for (const code of ['bad_key', 'api_disabled', 'unreachable', 'not_n8n', 'expired']) {
+      expect(errorText('de', code)).not.toBe(code);
+      expect(errorText('en', code)).not.toBe(code);
+    }
+  });
+
+  it('falls back rather than showing a raw code', () => {
+    expect(errorText('de', 'something_new')).toBe(errorText('de', 'invalid_request'));
+  });
+});
+
+describe('security headers', () => {
+  const harness = createHarness();
+
+  it('sets a strict CSP with no script on the consent screen', async () => {
+    // The consent screen is where a credential is typed. No inline script may
+    // run on it, whatever ends up in the markup.
+    const response = await harness.fetch('/authorize?client_id=unknown');
+    const csp = response.headers.get('content-security-policy') as string;
+    expect(csp).toContain("script-src 'none'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("form-action 'self'");
+    expect(response.headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('uses a nonce, not unsafe-inline, for the landing page script', async () => {
+    const response = await harness.fetch('/');
+    const csp = response.headers.get('content-security-policy') as string;
+    expect(csp).toMatch(/script-src 'nonce-[A-Za-z0-9+/=]+'/);
+    expect(csp).not.toContain("script-src 'unsafe-inline'");
+    const nonce = /script-src 'nonce-([^']+)'/.exec(csp)?.[1] as string;
+    expect(await response.text()).toContain(`nonce="${nonce}"`);
+  });
+
+  it('sets the standard hardening headers', async () => {
+    const response = await harness.fetch('/healthz');
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(response.headers.get('x-frame-options')).toBe('DENY');
+    expect(response.headers.get('referrer-policy')).toBe('no-referrer');
+  });
+
+  it('sets HSTS on an https base URL', async () => {
+    expect((await harness.fetch('/healthz')).headers.get('strict-transport-security')).toContain(
+      'max-age=31536000',
+    );
+  });
+
+  it('omits HSTS when running over plain http in development', async () => {
+    const local = createHarness({ PUBLIC_BASE_URL: 'http://localhost:8080' });
+    expect((await local.fetch('/healthz')).headers.get('strict-transport-security')).toBeNull();
+  });
+
+  it('answers a CORS preflight with the MCP headers', async () => {
+    const response = await createHarness().fetch(`/i/${TENANT}/mcp`, {
+      method: 'OPTIONS',
+      headers: { origin: 'https://claude.ai' },
+    });
+    expect(response.status).toBe(204);
+    expect(response.headers.get('access-control-allow-headers')).toContain('Mcp-Session-Id');
+    expect(response.headers.get('access-control-allow-methods')).toContain('DELETE');
+    expect(response.headers.get('access-control-allow-origin')).toBe('https://claude.ai');
+  });
+
+  it('does not require an Origin header', async () => {
+    // Anthropic's broker calls server-to-server and sends none; requiring one
+    // is a documented cause of initialize timeouts.
+    const response = await createHarness().fetch(`/i/${TENANT}/mcp`, {
+      method: 'POST',
+      body: '{}',
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it('echoes a request id', async () => {
+    const response = await harness.fetch('/healthz', { headers: { 'x-request-id': 'trace-1' } });
+    expect(response.headers.get('x-request-id')).toBe('trace-1');
+  });
+
+  it('generates a request id when the inbound one is not sane', async () => {
+    const response = await harness.fetch('/healthz', {
+      headers: { 'x-request-id': 'not a valid id!!' },
+    });
+    expect(response.headers.get('x-request-id')).not.toBe('not a valid id!!');
+  });
+});
+
+describe('public pages', () => {
+  const harness = createHarness();
+
+  it('serves a landing page with the connector URL pattern', async () => {
+    const html = await (await harness.fetch('/')).text();
+    expect(html).toContain(`${BASE_URL}/i/&lt;n8n-host&gt;/mcp`);
+  });
+
+  it('does not disclose which instances are configured', async () => {
+    // The landing page is unauthenticated; the tenant list is not public.
+    expect(await (await harness.fetch('/')).text()).not.toContain(TENANT);
+  });
+
+  it('serves the logo', async () => {
+    const response = await harness.fetch('/logo.svg');
+    expect(response.headers.get('content-type')).toContain('image/svg+xml');
+  });
+
+  it('reports liveness and readiness', async () => {
+    expect((await harness.fetch('/healthz')).status).toBe(200);
+    const ready = await harness.fetch('/readyz');
+    expect(ready.status).toBe(200);
+    expect((await ready.json()) as Record<string, unknown>).toMatchObject({ store: 'up' });
+  });
+
+  it('404s an unknown path as JSON', async () => {
+    const response = await harness.fetch('/nope');
+    expect(response.status).toBe(404);
+    expect((await response.json()) as { error: string }).toEqual({ error: 'not_found' });
+  });
+});
