@@ -1,0 +1,55 @@
+{
+  // ── Type-checking configuration (editor + `pnpm typecheck`) ────────────────
+  // The emit configuration lives in tsconfig.build.json, which extends this and
+  // narrows `include` to src/. Keeping them separate means the test suite is
+  // type-checked with exactly the same strictness as the source, without tests
+  // ever ending up in dist/.
+  //
+  // Compiled by TypeScript 7 — the native (Go) compiler. It is a drop-in for
+  // tsc 5.x for this codebase's feature set; `erasableSyntaxOnly` below keeps us
+  // inside the subset that Node can also strip natively, which is what makes
+  // `pnpm dev` work without a build step.
+  "compilerOptions": {
+    "target": "ES2024",
+    "lib": ["ES2024"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+
+    "outDir": "dist",
+    "rootDir": ".",
+
+    // ── Strictness ─────────────────────────────────────────────────────────
+    // Every flag TypeScript offers, on. This service handles credentials; an
+    // `any` that silently swallows a type error is a security-relevant defect,
+    // not a style issue.
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "exactOptionalPropertyTypes": true,
+    "useUnknownInCatchVariables": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+
+    // ── Module hygiene ─────────────────────────────────────────────────────
+    // verbatimModuleSyntax forces `import type` to be written explicitly, so
+    // the emitted JS imports exactly what the source says and nothing more.
+    // erasableSyntaxOnly bans enums, namespaces and parameter properties —
+    // the constructs Node's native type stripping cannot handle. Without it,
+    // `pnpm dev` and `pnpm build` could diverge on which syntax is legal.
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+
+    "declaration": false,
+    "sourceMap": true,
+    "removeComments": false
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"]
+}

@@ -1,0 +1,16 @@
+{
+  // Emit-only configuration used by `pnpm build`. Identical strictness to
+  // tsconfig.json; the difference is that `rootDir` is src/ and tests are
+  // excluded, so `dist/main.js` sits at the top of dist/ rather than under
+  // dist/src/ — which is what the Dockerfile's CMD and package.json `main`
+  // both assume.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["tests/**/*", "vitest.config.ts"]
+}

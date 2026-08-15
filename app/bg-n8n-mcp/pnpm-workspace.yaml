@@ -1,0 +1,33 @@
+# =============================================================================
+# pnpm settings
+# =============================================================================
+# pnpm 11 made `.npmrc` auth/registry-only — every pnpm *setting* now lives
+# here (or in ~/.config/pnpm/config.yaml). A settings line left behind in
+# .npmrc is silently ignored, which is the pnpm-11 upgrade trap.
+#
+# This is a single-package project, so `packages:` stays empty; the file exists
+# for the settings below.
+packages: []
+
+# ── Docker portability ───────────────────────────────────────────────────────
+# pnpm's default `isolated` linker builds node_modules out of symlinks into
+# .pnpm/, which do not survive a `COPY --from=build` between Docker stages —
+# the runtime image gets dangling links and fails at the first import. The
+# hoisted linker produces a plain, npm-shaped tree that copies cleanly, at the
+# cost of pnpm's strict phantom-dependency protection. That protection is
+# reclaimed in CI, which installs with the default linker.
+nodeLinker: hoisted
+
+# ── Supply-chain posture ─────────────────────────────────────────────────────
+# Nothing in the dependency tree has an install script — the graph is pure
+# JavaScript plus platform-specific prebuilt binaries (TypeScript 7, Biome,
+# oxlint) that ship as optionalDependencies rather than as compiled-on-install
+# native addons. So the allowlist is empty and pnpm 11's `strictDepBuilds`
+# default is exactly what we want: if a future dependency introduces a build
+# script, the install fails loudly and someone has to decide about it.
+allowBuilds: {}
+
+# Do not resolve a version published less than a day ago. A narrow but real
+# window on npm account compromises, and nothing here is urgent enough to need
+# a package the same hour it ships.
+minimumReleaseAge: 1440

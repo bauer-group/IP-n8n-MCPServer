@@ -1,0 +1,87 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.8/schema.json",
+  "root": true,
+
+  // One tool for lint and format, the way ruff is one tool in the sibling
+  // Python servers (IP-Shlink-MCPServer, IP-ZAMMAD-MCPServer). Type-aware
+  // rules are not Biome's job here — `tsc --noEmit` with every strict flag on
+  // is, and it runs in the same `pnpm check` gate.
+  "files": {
+    "includes": ["src/**/*.ts", "tests/**/*.ts", "*.ts", "*.json"],
+    "ignoreUnknown": true
+  },
+
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100,
+    "lineEnding": "lf"
+  },
+
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "semicolons": "always",
+      "trailingCommas": "all",
+      "arrowParentheses": "always"
+    }
+  },
+
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "suspicious": {
+        "noExplicitAny": "error",
+        // Everything user-visible goes through src/logger.ts, which redacts.
+        // A stray console.log is how an API key reaches a log aggregator.
+        "noConsole": "error"
+      },
+      "complexity": {
+        // 40 rather than the default 15. The two handlers that approach it —
+        // POST /authorize and the MCP proxy — are linear chains of independent
+        // security guards with early returns, and every branch is a check
+        // something else depends on. The genuinely separable pieces have been
+        // extracted (n8n/credential.ts, buildUpstreamHeaders, relayResponse);
+        // splitting further would scatter one readable sequence across files
+        // without removing a single decision. Kept as a warning so a handler
+        // that grows past this still gets noticed.
+        "noExcessiveCognitiveComplexity": {
+          "level": "warn",
+          "options": { "maxAllowedComplexity": 40 }
+        },
+        // Off because it directly contradicts tsconfig's
+        // `noPropertyAccessFromIndexSignature`, and that flag is the more
+        // valuable of the two here: it forces `query['client_id']` rather than
+        // `query.client_id`, which keeps "this came from an index signature,
+        // it may be undefined" visible at every read of untrusted query and
+        // form data. Biome would have us drop exactly that signal.
+        "useLiteralKeys": "off"
+      },
+      "style": {
+        "useConst": "error",
+        "noNonNullAssertion": "error"
+      },
+      "correctness": {
+        "noUnusedImports": "error",
+        "noUnusedVariables": "error"
+      }
+    }
+  },
+
+  "overrides": [
+    {
+      // Tests deliberately construct malformed input and reach into internals
+      // to force failure paths; the production-code bans get in the way there
+      // without buying any safety.
+      "includes": ["tests/**/*.ts"],
+      "linter": {
+        "rules": {
+          "suspicious": { "noExplicitAny": "off" },
+          "style": { "noNonNullAssertion": "off" }
+        }
+      }
+    }
+  ]
+}
