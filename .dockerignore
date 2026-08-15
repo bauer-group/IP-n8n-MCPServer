@@ -1,0 +1,35 @@
+# =============================================================================
+# n8n MCP Server — root .dockerignore
+# =============================================================================
+# Keeps build contexts lean. The per-image .dockerignore in app/bg-n8n-mcp/
+# governs what the image actually sees; this one covers the repository root
+# for tooling that builds from here.
+
+.git
+.github
+.gitignore
+.dockerignore
+
+.env
+.env.*
+!.env.example
+
+.draft
+
+docs
+*.md
+LICENSE
+
+docker-compose*.yml
+
+scripts
+
+node_modules
+dist
+coverage
+*.tsbuildinfo
+
+.idea
+.vscode
+.DS_Store
+Thumbs.db

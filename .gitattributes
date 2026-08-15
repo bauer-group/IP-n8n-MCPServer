@@ -1,0 +1,36 @@
+# =============================================================================
+# Line endings
+# =============================================================================
+# Development happens on Windows; everything this repository produces runs on
+# Linux. Without this file, git's autocrlf rewrites checked-out files to CRLF
+# and they are then COPYed or bind-mounted into containers that way — which is
+# harmless for most formats and not for all of them.
+#
+# Normalising in the repository (and checking out LF everywhere) removes the
+# whole class of "works on my machine, fails in the image" without anyone
+# needing the right local git config.
+
+* text=auto eol=lf
+
+# Explicitly LF: read by a Linux tool, or mounted into a container.
+*.sh        text eol=lf
+*.mjs       text eol=lf
+*.ts        text eol=lf
+*.json      text eol=lf
+*.jsonc     text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.md        text eol=lf
+Dockerfile  text eol=lf
+Caddyfile   text eol=lf
+.env.example text eol=lf
+.npmrc      text eol=lf
+
+# Lockfile: generated, and noisy in diffs. Marked so review tooling collapses
+# it, while still being a normal tracked text file.
+pnpm-lock.yaml text eol=lf linguist-generated=true -diff
+
+# Binary, never touched.
+*.png       binary
+*.jpg       binary
+*.ico       binary

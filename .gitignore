@@ -1,0 +1,56 @@
+# =============================================================================
+# n8n MCP Server — .gitignore
+# =============================================================================
+
+# ── Environment files (never commit secrets) ─────────────────────────────────
+.env
+.env.local
+.env.*.local
+.env.bak
+.env.production-local
+!.env.example
+
+# ── Node / pnpm ──────────────────────────────────────────────────────────────
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+.eslintcache
+
+# pnpm's content-addressable store and its virtual store. The LOCKFILE
+# (pnpm-lock.yaml) is deliberately NOT ignored: the Docker build runs
+# `pnpm install --frozen-lockfile`, so an untracked lockfile would mean the
+# image resolves fresh transitive versions on every build — the exact
+# non-reproducibility a lockfile exists to prevent.
+.pnpm-store/
+.pnpm-debug.log*
+npm-debug.log*
+yarn-error.log*
+
+# ── Test / tooling caches ────────────────────────────────────────────────────
+.vitest/
+.turbo/
+.cache/
+*.lcov
+
+# ── IDE / Editor ─────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Docker / runtime ─────────────────────────────────────────────────────────
+*.pid
+*.log
+*.log.*
+
+# ── OS / temp ────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── E2E test artefacts ───────────────────────────────────────────────────────
+# Throwaway CA and leaf, regenerated on every `node tests/e2e/run.mjs`.
+tests/e2e/certs/
