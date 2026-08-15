@@ -1,0 +1,192 @@
+# =============================================================================
+# End-to-end test stack
+# =============================================================================
+# Everything real except the AI client: a genuine n8n, the genuine upstream
+# n8n-mcp image, real Redis, and the gateway built from source. `run.mjs` plays
+# the part of the MCP client.
+#
+#   run.mjs ──OAuth 2.1──▶ gateway ──x-n8n-url/x-n8n-key──▶ n8n-mcp ──▶ n8n
+#                             │                                          ▲
+#                             └──── probes the API key ───────────────────┘
+#                                        (both over TLS, via caddy)
+#
+# WHY CADDY IS HERE
+#   The gateway speaks HTTPS to n8n instances and nothing else — `resolveTenant`
+#   only ever produces an `https://` origin. That is a deliberate production
+#   constraint, not a limitation to work around, so the test honours it: caddy
+#   terminates TLS for `n8n.local` with a cert from a throwaway CA that both
+#   Node processes trust via NODE_EXTRA_CA_CERTS.
+#
+#   This is what makes the test meaningful. A harness that let the gateway talk
+#   plain HTTP would be testing a code path production never takes.
+#
+# Usage:  node tests/e2e/run.mjs        (brings the stack up and tears it down)
+# =============================================================================
+
+name: bg-n8n-mcp-e2e
+
+services:
+  # ── A real n8n ─────────────────────────────────────────────────────────────
+  n8n:
+    image: ${E2E_N8N_IMAGE:-docker.n8n.io/n8nio/n8n}:${E2E_N8N_VERSION:-latest}
+    environment:
+      # SQLite in a tmpfs — the instance is created and destroyed per run.
+      DB_TYPE: sqlite
+      N8N_ENCRYPTION_KEY: e2e-encryption-key-not-a-secret-0000
+      N8N_HOST: n8n.local
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: https://n8n.local/
+      N8N_PUBLIC_API_DISABLED: "false"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      N8N_ONBOARDING_FLOW_DISABLED: "true"
+      # The cookie is set over TLS via caddy, but n8n only sees plain HTTP on
+      # its own socket; without this it refuses to issue a session cookie.
+      N8N_SECURE_COOKIE: "false"
+      N8N_RUNNERS_ENABLED: "true"
+      # Deliberately NOT setting E2E_TESTS=true: that flag makes n8n import a
+      # test-only controller which is not present in the production image, and
+      # the container exits at startup. This test uses n8n's normal REST API.
+    expose:
+      - 5678
+    networks:
+      e2e:
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 20s
+
+  # ── TLS terminator, so the gateway can reach n8n the way it does in prod ───
+  caddy:
+    image: caddy:2-alpine
+    depends_on:
+      n8n:
+        condition: service_healthy
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/certs:ro
+    networks:
+      e2e:
+        aliases:
+          # Both the gateway and the backend resolve `n8n.local` to this
+          # container, so the tenant hostname is a real DNS name rather than
+          # something special-cased in code.
+          - n8n.local
+    healthcheck:
+      # A TCP check rather than an HTTPS request: busybox wget's TLS support is
+      # not something to bet the stack's startup on. Whether TLS actually works
+      # is proven by provision-n8n.mjs, which talks to https://n8n.local from a
+      # Node process that trusts the CA — the same path the gateway uses.
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 443 || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    expose:
+      - 6379
+    networks:
+      e2e:
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # ── The unmodified upstream MCP server ─────────────────────────────────────
+  n8n-mcp-backend:
+    image: ${BACKEND_IMAGE:-ghcr.io/czlonkowski/n8n-mcp}:${BACKEND_VERSION:-2.69.2}
+    depends_on:
+      caddy:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      MCP_MODE: http
+      PORT: "3000"
+      AUTH_TOKEN: ${E2E_UPSTREAM_TOKEN}
+      ENABLE_MULTI_TENANT: "true"
+      # No N8N_API_URL / N8N_API_KEY — the same absence production relies on.
+      MULTI_TENANT_SESSION_STRATEGY: instance
+      MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS: "true"
+      TRUST_PROXY: "1"
+      AUTH_RATE_LIMIT_MAX: "1000"
+      # n8n.local resolves to a private Docker address, so `strict` would
+      # (correctly) refuse it. Production reaches instances over public HTTPS.
+      WEBHOOK_SECURITY_MODE: permissive
+      NODE_EXTRA_CA_CERTS: /certs/ca.crt
+      LOG_LEVEL: info
+    volumes:
+      - ./certs:/certs:ro
+    expose:
+      - 3000
+    networks:
+      e2e:
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+
+  # ── The gateway, built from source ─────────────────────────────────────────
+  gateway:
+    build:
+      context: ../../app/bg-n8n-mcp
+      target: production
+      args:
+        APP_VERSION: e2e
+    image: bg-n8n-mcp:e2e
+    depends_on:
+      redis:
+        condition: service_healthy
+      n8n-mcp-backend:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: development
+      PUBLIC_BASE_URL: http://localhost:${E2E_GATEWAY_PORT:-18080}
+      MCP_HOST: "::"
+      MCP_PORT: "8080"
+      LOG_FORMAT: json
+      LOG_LEVEL: debug
+
+      N8N_MCP_URL: http://n8n-mcp-backend:3000
+      N8N_MCP_AUTH_TOKEN: ${E2E_UPSTREAM_TOKEN}
+
+      N8N_ALLOWED_HOSTS: n8n.local
+      # n8n.local resolves inside the Docker network. Production keeps this
+      # false; the test is explicit about using the documented escape hatch.
+      N8N_ALLOW_PRIVATE_ADDRESSES: "true"
+      N8N_PROBE_TIMEOUT_MS: "10000"
+
+      AUTH_STORAGE_ENCRYPTION_KEY: ${E2E_STORAGE_KEY}
+      AUTH_REDIS_URL: redis://redis:6379/0
+
+      RATE_LIMITER_ENABLED: "true"
+      RATE_LIMITER_TRUSTED_PROXY_HOPS: "0"
+
+      NODE_EXTRA_CA_CERTS: /certs/ca.crt
+    volumes:
+      - ./certs:/certs:ro
+      # Mounted so `docker compose run` can execute provision-n8n.mjs from
+      # inside the network — the only place that both resolves n8n.local and
+      # trusts the throwaway CA. Unused by the server itself.
+      - ./:/e2e:ro
+    ports:
+      - "${E2E_GATEWAY_PORT:-18080}:8080"
+    networks:
+      e2e:
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+networks:
+  e2e:
+    driver: bridge
