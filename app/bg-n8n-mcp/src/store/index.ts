@@ -278,6 +278,45 @@ export class Store {
     await this.#backend.del(NS.pending + hashKey(this.#keyring, requestId));
   }
 
+  /**
+   * Claim a pending request: read and delete in one atomic step.
+   *
+   * The consent POST claims before it does any work, because the work takes
+   * seconds — a key probe against a remote instance — and the form offers no
+   * way to stop a user pressing submit twice while it runs. Two claims of one
+   * record cannot both succeed, so two grants holding two sealed copies of the
+   * same API key can no longer be minted from one consent.
+   *
+   * A failed attempt puts the record back with `restorePendingAuth`, which is
+   * what keeps a mistyped key on the same form rather than dropping the user
+   * into "session expired".
+   */
+  async takePendingAuth(requestId: string): Promise<PendingAuth | null> {
+    if (!requestId) return null;
+    return await this.#consume<PendingAuth>(NS.pending + hashKey(this.#keyring, requestId));
+  }
+
+  /**
+   * Put a claimed record back so this attempt was not the user's last.
+   *
+   * The TTL is the remainder of the ORIGINAL deadline, never a fresh one:
+   * restoring at full TTL would let a caller hold a pending request open
+   * indefinitely by retrying. Returns false when nothing was restored because
+   * that deadline has already passed.
+   */
+  async restorePendingAuth(requestId: string, request: PendingAuth): Promise<boolean> {
+    if (!requestId) return false;
+    const elapsed = Math.floor((Date.now() - request.createdAt) / 1000);
+    const remaining = PENDING_AUTH_TTL_SECONDS - elapsed;
+    if (remaining <= 0) return false;
+    await this.#backend.set(
+      NS.pending + hashKey(this.#keyring, requestId),
+      JSON.stringify(request),
+      remaining,
+    );
+    return true;
+  }
+
   // ── Authorization codes ────────────────────────────────────────────────────
 
   async putCode(code: string, record: AuthCode): Promise<void> {

@@ -61,7 +61,20 @@ export interface OAuthDeps {
  * Rate-limit buckets. Named rather than ad-hoc strings so the set is visible in
  * one place and cannot drift between the check and the increment.
  */
-const BUCKET = { login: 'login', token: 'token' } as const;
+const BUCKET = { login: 'login', token: 'token', submit: 'submit' } as const;
+
+/**
+ * Consent submissions one IP may make per login window, as a multiple of
+ * `RATE_LIMITER_LOGIN_MAX`.
+ *
+ * Separate from the lockout because it answers a different question. The
+ * lockout asks "is someone guessing this account's key" and must therefore
+ * count only verdicts on a key. This asks "is someone using the consent form
+ * as a probe engine", which every submission contributes to regardless of how
+ * it ends. At the default of 10 that allows 60 submissions per 15 minutes per
+ * address — far beyond any human, well below a useful amplifier.
+ */
+const SUBMIT_BUDGET_FACTOR = 6;
 
 export function createOAuthRoutes(deps: OAuthDeps): Hono {
   const { config, store } = deps;
@@ -249,7 +262,16 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
     const locale = locales(c);
     const form = await formBody(c);
     const requestId = form['request_id'] ?? '';
-    const pending = await store.getPendingAuth(requestId);
+
+    // CLAIMED, not read. Validating the key takes seconds against a remote
+    // instance, and the form has no client-side guard against a second submit
+    // in that window (it ships no script, and the page runs under
+    // `script-src 'none'`). A non-destructive read let both submits through to
+    // `createGrant`, minting two long-lived grants — two sealed copies of the
+    // same API key — of which the user only ever learns about one. An atomic
+    // claim makes the second submit lose, and losing reads as "session
+    // expired", which is exactly what happened to it.
+    const pending = await store.takePendingAuth(requestId);
 
     if (!pending) {
       return c.html(
@@ -261,7 +283,7 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
     const client = await findClient(config, store, pending.clientId);
     if (!client || !matchesRedirectUri(client.redirectUris, pending.redirectUri)) {
       // The client's registration changed or expired while the form was open.
-      await store.consumePendingAuth(requestId);
+      // The claim above already removed the record; there is nothing to put back.
       return c.html(
         errorPage(locale, config.MCP_DISPLAY_NAME, errorText(locale, 'unknown_client')),
         400,
@@ -271,9 +293,16 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
     const username = (form['username'] ?? '').trim().slice(0, 200);
     const apiKey = (form['api_key'] ?? '').trim();
 
-    /** Re-render the same form, keeping the request alive for another attempt. */
-    const retry = (code: string, status: 400 | 429 = 400) =>
-      c.html(
+    /**
+     * Re-render the same form, keeping the request alive for another attempt.
+     *
+     * Restoring the claim is what makes this a retry rather than a dead end.
+     * Every non-success exit below routes through here, so the claim is put
+     * back on all of them without each one having to remember to.
+     */
+    const retry = async (code: string, status: 400 | 429 = 400) => {
+      await store.restorePendingAuth(requestId, pending);
+      return c.html(
         consentPage({
           locale,
           displayName: config.MCP_DISPLAY_NAME,
@@ -285,6 +314,7 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
         }),
         status,
       );
+    };
 
     // ── Brute-force gate ─────────────────────────────────────────────────────
     // Keyed on the client IP AND the typed username. IP alone punishes everyone
@@ -298,7 +328,34 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
       ]);
       if (Math.max(byIp, byUser) >= config.RATE_LIMITER_LOGIN_MAX) {
         log().warn({ evt: 'login_rate_limited', host: pending.hostname, ip });
-        return retry('rate_limited_login', 429);
+        return await retry('rate_limited_login', 429);
+      }
+    }
+
+    // ── Volume gate ──────────────────────────────────────────────────────────
+    // The lockout above counts only credential VERDICTS, deliberately: an
+    // unreachable instance must never lock out the people who depend on it.
+    // The cost of that is every other outcome going uncounted, and each one
+    // still buys the caller an outbound probe from this gateway. This second
+    // bucket bounds the request volume without touching the lockout semantics,
+    // and it counts every submission — including the ones that succeed.
+    //
+    // The ceiling is a generous multiple of the lockout, so it is reached only
+    // by something automated; a human fumbling a paste cannot trip it.
+    if (config.RATE_LIMITER_ENABLED) {
+      const submissions = await store.countAttempt(
+        BUCKET.submit,
+        ip,
+        config.RATE_LIMITER_LOGIN_WINDOW,
+      );
+      if (submissions > config.RATE_LIMITER_LOGIN_MAX * SUBMIT_BUDGET_FACTOR) {
+        log().warn({
+          evt: 'authorize_flooded',
+          host: pending.hostname,
+          ip,
+          submissions,
+        });
+        return await retry('rate_limited_login', 429);
       }
     }
 
@@ -312,8 +369,8 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
       ]);
     };
 
-    if (!username) return retry('no_username');
-    if (!apiKey) return retry('empty');
+    if (!username) return await retry('no_username');
+    if (!apiKey) return await retry('empty');
 
     // ── Validate the credential ──────────────────────────────────────────────
     // Offline inspection, then the SSRF-guarded address check, then one probe
@@ -328,7 +385,7 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
         code: check.code,
         detail: check.detail,
       });
-      return retry(check.code);
+      return await retry(check.code);
     }
 
     // ── Consent granted ──────────────────────────────────────────────────────
@@ -352,7 +409,6 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
       codeChallenge: pending.codeChallenge,
       resource: pending.resource,
     });
-    await store.consumePendingAuth(requestId);
 
     log().info({
       evt: 'consent_granted',
@@ -504,6 +560,20 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
         { error: 'invalid_grant', error_description: 'the n8n API key is no longer valid' },
         400,
       );
+    }
+
+    // The fail-open above is deliberate, but it must not also be silent. The
+    // interactive path logs `credential_rejected` for every non-ok probe;
+    // without this line the unattended path logs nothing at all, so an instance
+    // that has been unreachable for a week looks exactly like a healthy one.
+    if (!probe.ok) {
+      log().warn({
+        evt: 'refresh_probe_failed',
+        reason: probe.code,
+        host: grant.hostname,
+        username: grant.username,
+        detail: probe.detail,
+      });
     }
 
     await store.touchGrant(grant);
