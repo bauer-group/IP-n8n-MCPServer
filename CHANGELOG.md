@@ -1,3 +1,5 @@
+## [0.2.2](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.2.1...v0.2.2) (2026-08-16)
+
 ## [0.2.1](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.2.0...v0.2.1) (2026-08-15)
 
 ### 🐛 Bug Fixes
