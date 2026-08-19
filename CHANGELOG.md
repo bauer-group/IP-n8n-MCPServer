@@ -1,3 +1,9 @@
+## [0.3.4](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.3.3...v0.3.4) (2026-08-19)
+
+### 🐛 Bug Fixes
+
+* **security:** emitted a scheme-source for private-use redirect URIs ([875da2f](https://github.com/bauer-group/IP-n8n-MCPServer/commit/875da2f8773660dc9b7744394f0bba60caa8b77e))
+
 ## [0.3.3](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.3.2...v0.3.3) (2026-08-19)
 
 ### 🐛 Bug Fixes
