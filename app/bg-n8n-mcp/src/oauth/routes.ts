@@ -301,143 +301,160 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
       );
     }
 
-    const username = (form['username'] ?? '').trim().slice(0, 200);
-    const apiKey = (form['api_key'] ?? '').trim();
-
-    /**
-     * Re-render the same form, keeping the request alive for another attempt.
-     *
-     * Restoring the claim is what makes this a retry rather than a dead end.
-     * Every non-success exit below routes through here, so the claim is put
-     * back on all of them without each one having to remember to.
-     */
-    const retry = async (code: string, status: 400 | 429 = 400) => {
-      await store.restorePendingAuth(requestId, pending);
-      return c.html(
-        consentPage({
-          locale,
-          displayName: config.MCP_DISPLAY_NAME,
-          hostname: pending.hostname,
-          clientName: client.clientName,
-          requestId,
-          username,
-          error: errorText(locale, code),
-        }),
-        status,
-      );
-    };
-
-    // ── Brute-force gate ─────────────────────────────────────────────────────
-    // Keyed on the client IP AND the typed username. IP alone punishes everyone
-    // behind one NAT for a single fat-fingered colleague; username alone lets
-    // an attacker spread guesses across names. Either bucket tripping is enough.
-    const ip = clientIp(c, config.RATE_LIMITER_TRUSTED_PROXY_HOPS);
-    if (config.RATE_LIMITER_ENABLED) {
-      const [byIp, byUser] = await Promise.all([
-        store.attemptCount(BUCKET.login, ip),
-        username ? store.attemptCount(BUCKET.login, `u:${username}`) : Promise.resolve(0),
-      ]);
-      if (Math.max(byIp, byUser) >= config.RATE_LIMITER_LOGIN_MAX) {
-        log().warn({ evt: 'login_rate_limited', host: pending.hostname, ip });
-        return await retry('rate_limited_login', 429);
-      }
-    }
-
-    // ── Volume gate ──────────────────────────────────────────────────────────
-    // The lockout above counts only credential VERDICTS, deliberately: an
-    // unreachable instance must never lock out the people who depend on it.
-    // The cost of that is every other outcome going uncounted, and each one
-    // still buys the caller an outbound probe from this gateway. This second
-    // bucket bounds the request volume without touching the lockout semantics,
-    // and it counts every submission — including the ones that succeed.
+    // The claim is held from here on. Every ordinary exit below puts it back
+    // through `retry`, but a thrown error has no such exit — and before the
+    // claim existed, a throw simply left the record in place for the user to
+    // try again. `finally` restores that property.
     //
-    // The ceiling is a generous multiple of the lockout, so it is reached only
-    // by something automated; a human fumbling a paste cannot trip it.
-    if (config.RATE_LIMITER_ENABLED) {
-      const submissions = await store.countAttempt(
-        BUCKET.submit,
-        ip,
-        config.RATE_LIMITER_LOGIN_WINDOW,
-      );
-      if (submissions > config.RATE_LIMITER_LOGIN_MAX * SUBMIT_BUDGET_FACTOR) {
-        log().warn({
-          evt: 'authorize_flooded',
-          host: pending.hostname,
-          ip,
-          submissions,
-        });
-        return await retry('rate_limited_login', 429);
+    // `spent` flips when a grant exists, not at the redirect: if something
+    // throws after createGrant, putting the claim back would let the user
+    // consent a second time and mint a second grant holding a second sealed
+    // copy of one API key — the exact defect the claim was introduced to
+    // prevent. An orphaned grant is the safer of the two failures.
+    let spent = false;
+    try {
+      const username = (form['username'] ?? '').trim().slice(0, 200);
+      const apiKey = (form['api_key'] ?? '').trim();
+
+      /**
+       * Re-render the same form, keeping the request alive for another attempt.
+       *
+       * It does not put the claim back itself. The `finally` above owns that,
+       * which is what makes the guarantee hold for exits this function does
+       * not cover — a thrown error most of all. Two places restoring the same
+       * record would work, and would also mean the invariant is stated twice
+       * and can drift.
+       */
+      const retry = async (code: string, status: 400 | 429 = 400) =>
+        c.html(
+          consentPage({
+            locale,
+            displayName: config.MCP_DISPLAY_NAME,
+            hostname: pending.hostname,
+            clientName: client.clientName,
+            requestId,
+            username,
+            error: errorText(locale, code),
+          }),
+          status,
+        );
+
+      // ── Brute-force gate ─────────────────────────────────────────────────────
+      // Keyed on the client IP AND the typed username. IP alone punishes everyone
+      // behind one NAT for a single fat-fingered colleague; username alone lets
+      // an attacker spread guesses across names. Either bucket tripping is enough.
+      const ip = clientIp(c, config.RATE_LIMITER_TRUSTED_PROXY_HOPS);
+      if (config.RATE_LIMITER_ENABLED) {
+        const [byIp, byUser] = await Promise.all([
+          store.attemptCount(BUCKET.login, ip),
+          username ? store.attemptCount(BUCKET.login, `u:${username}`) : Promise.resolve(0),
+        ]);
+        if (Math.max(byIp, byUser) >= config.RATE_LIMITER_LOGIN_MAX) {
+          log().warn({ evt: 'login_rate_limited', host: pending.hostname, ip });
+          return await retry('rate_limited_login', 429);
+        }
       }
-    }
 
-    const countFailure = async () => {
-      if (!config.RATE_LIMITER_ENABLED) return;
-      await Promise.all([
-        store.countAttempt(BUCKET.login, ip, config.RATE_LIMITER_LOGIN_WINDOW),
-        username
-          ? store.countAttempt(BUCKET.login, `u:${username}`, config.RATE_LIMITER_LOGIN_WINDOW)
-          : Promise.resolve(0),
-      ]);
-    };
+      // ── Volume gate ──────────────────────────────────────────────────────────
+      // The lockout above counts only credential VERDICTS, deliberately: an
+      // unreachable instance must never lock out the people who depend on it.
+      // The cost of that is every other outcome going uncounted, and each one
+      // still buys the caller an outbound probe from this gateway. This second
+      // bucket bounds the request volume without touching the lockout semantics,
+      // and it counts every submission — including the ones that succeed.
+      //
+      // The ceiling is a generous multiple of the lockout, so it is reached only
+      // by something automated; a human fumbling a paste cannot trip it.
+      if (config.RATE_LIMITER_ENABLED) {
+        const submissions = await store.countAttempt(
+          BUCKET.submit,
+          ip,
+          config.RATE_LIMITER_LOGIN_WINDOW,
+        );
+        if (submissions > config.RATE_LIMITER_LOGIN_MAX * SUBMIT_BUDGET_FACTOR) {
+          log().warn({
+            evt: 'authorize_flooded',
+            host: pending.hostname,
+            ip,
+            submissions,
+          });
+          return await retry('rate_limited_login', 429);
+        }
+      }
 
-    if (!username) return await retry('no_username');
-    if (!apiKey) return await retry('empty');
+      const countFailure = async () => {
+        if (!config.RATE_LIMITER_ENABLED) return;
+        await Promise.all([
+          store.countAttempt(BUCKET.login, ip, config.RATE_LIMITER_LOGIN_WINDOW),
+          username
+            ? store.countAttempt(BUCKET.login, `u:${username}`, config.RATE_LIMITER_LOGIN_WINDOW)
+            : Promise.resolve(0),
+        ]);
+      };
 
-    // ── Validate the credential ──────────────────────────────────────────────
-    // Offline inspection, then the SSRF-guarded address check, then one probe
-    // against the instance. See n8n/credential.ts for which failures count
-    // toward the lockout and why.
-    const check = await validateCredential(config, pending.hostname, apiKey);
-    if (!check.ok) {
-      if (check.countsAsFailure) await countFailure();
-      log().warn({
-        evt: 'credential_rejected',
-        host: pending.hostname,
-        code: check.code,
-        detail: check.detail,
+      if (!username) return await retry('no_username');
+      if (!apiKey) return await retry('empty');
+
+      // ── Validate the credential ──────────────────────────────────────────────
+      // Offline inspection, then the SSRF-guarded address check, then one probe
+      // against the instance. See n8n/credential.ts for which failures count
+      // toward the lockout and why.
+      const check = await validateCredential(config, pending.hostname, apiKey);
+      if (!check.ok) {
+        if (check.countsAsFailure) await countFailure();
+        log().warn({
+          evt: 'credential_rejected',
+          host: pending.hostname,
+          code: check.code,
+          detail: check.detail,
+        });
+        return await retry(check.code);
+      }
+
+      // ── Consent granted ──────────────────────────────────────────────────────
+      await store.clearAttempts(BUCKET.login, ip);
+      if (username) await store.clearAttempts(BUCKET.login, `u:${username}`);
+
+      const grant = await store.createGrant({
+        hostname: pending.hostname,
+        sealedKey: seal(store.keyring, apiKey),
+        clientId: client.clientId,
+        resource: pending.resource,
+        username,
+        n8nUserId: check.n8nUserId,
       });
-      return await retry(check.code);
+
+      spent = true;
+
+      const code = randomToken();
+      await store.putCode(code, {
+        grantId: grant.grantId,
+        clientId: client.clientId,
+        redirectUri: pending.redirectUri,
+        codeChallenge: pending.codeChallenge,
+        resource: pending.resource,
+      });
+
+      log().info({
+        evt: 'consent_granted',
+        host: pending.hostname,
+        username,
+        n8n_user: short(grant.n8nUserId),
+        client_id: short(client.clientId, 40),
+        grant_id: short(grant.grantId),
+      });
+
+      const back = new URL(pending.redirectUri);
+      back.searchParams.set('code', code);
+      if (pending.state) back.searchParams.set('state', pending.state);
+      back.searchParams.set('iss', config.baseUrl);
+
+      // 303, not 302 or 307. See the file header — this one line is the
+      // difference between a working connector and a 405 at the callback.
+      return c.redirect(back.toString(), 303);
+    } finally {
+      if (!spent) await store.restorePendingAuth(requestId, pending);
     }
-
-    // ── Consent granted ──────────────────────────────────────────────────────
-    await store.clearAttempts(BUCKET.login, ip);
-    if (username) await store.clearAttempts(BUCKET.login, `u:${username}`);
-
-    const grant = await store.createGrant({
-      hostname: pending.hostname,
-      sealedKey: seal(store.keyring, apiKey),
-      clientId: client.clientId,
-      resource: pending.resource,
-      username,
-      n8nUserId: check.n8nUserId,
-    });
-
-    const code = randomToken();
-    await store.putCode(code, {
-      grantId: grant.grantId,
-      clientId: client.clientId,
-      redirectUri: pending.redirectUri,
-      codeChallenge: pending.codeChallenge,
-      resource: pending.resource,
-    });
-
-    log().info({
-      evt: 'consent_granted',
-      host: pending.hostname,
-      username,
-      n8n_user: short(grant.n8nUserId),
-      client_id: short(client.clientId, 40),
-      grant_id: short(grant.grantId),
-    });
-
-    const back = new URL(pending.redirectUri);
-    back.searchParams.set('code', code);
-    if (pending.state) back.searchParams.set('state', pending.state);
-    back.searchParams.set('iss', config.baseUrl);
-
-    // 303, not 302 or 307. See the file header — this one line is the
-    // difference between a working connector and a 405 at the callback.
-    return c.redirect(back.toString(), 303);
   });
 
   // ───────────────────────────────────────────────────────────────────────────

@@ -141,6 +141,54 @@ describe('one consent, one grant', () => {
   });
 });
 
+describe('an unexpected failure does not eat the request', () => {
+  beforeEach(() => {
+    harness = createHarness();
+    fetchStub = stubFetch(async () => n8nWorkflowsOk());
+  });
+
+  it('puts the claim back when the handler throws, so the user can retry', async () => {
+    // Before the consent request was claimed rather than read, a throw left
+    // the record in place and the user simply tried again. The claim removed
+    // that property unless something restores it, and the cost of losing it
+    // is the whole flow: the form's handle no longer resolves, so every later
+    // submit reports an expired session and the only way out is to start over
+    // in the AI client.
+    const store = harness.store as unknown as { createGrant: unknown };
+    const realCreateGrant = store.createGrant;
+    store.createGrant = () => {
+      throw new Error('redis went away mid-consent');
+    };
+
+    const requestId = await openConsentForm();
+    const failed = await submit(requestId, makeN8nKey());
+    expect(failed.status).toBe(500);
+
+    store.createGrant = realCreateGrant;
+
+    // The decisive part: the same handle still works.
+    const retried = await submit(requestId, makeN8nKey());
+    expect(retried.status).toBe(303);
+  });
+
+  it('keeps a spent request spent when the failure comes after the grant', async () => {
+    // The mirror image, and the reason `spent` flips at createGrant rather
+    // than at the redirect. Restoring here would let the user consent twice
+    // and mint a second grant holding a second sealed copy of one API key.
+    const store = harness.store as unknown as { putCode: unknown };
+    store.putCode = () => {
+      throw new Error('failed after the grant existed');
+    };
+
+    const requestId = await openConsentForm();
+    expect((await submit(requestId, makeN8nKey())).status).toBe(500);
+
+    const replay = await submit(requestId, makeN8nKey());
+    expect(replay.status).toBe(400);
+    expect(await replay.text()).toMatch(/zu lange gedauert|took too long/i);
+  });
+});
+
 describe('submission volume gate', () => {
   beforeEach(() => {
     // LOGIN_MAX 1 puts the submission ceiling at 1 * 6 = 6.
