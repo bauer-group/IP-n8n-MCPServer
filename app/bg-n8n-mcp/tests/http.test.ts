@@ -246,6 +246,22 @@ describe('security headers', () => {
         uri: 'http://127.0.0.1:49731/callback',
         origin: 'http://127.0.0.1:49731',
       },
+      // RFC 8252 §7.1 private-use schemes, which isAcceptableRedirectUri
+      // accepts by name. `new URL(...).origin` is the literal string "null"
+      // for every one of these; emitting that yields a host-source matching
+      // nothing, which silently reinstates the policy that broke the flow.
+      {
+        name: 'native/private-scheme',
+        type: 'native',
+        uri: 'cursor://anysphere.cursor-retrieval/cb',
+        origin: 'cursor:',
+      },
+      {
+        name: 'native/reverse-dns',
+        type: 'native',
+        uri: 'com.example.app:/cb',
+        origin: 'com.example.app:',
+      },
     ];
 
     for (const t of cases) {
@@ -273,6 +289,7 @@ describe('security headers', () => {
       expect(page.status, `${t.name} authorize`).toBe(200);
       const csp = page.headers.get('content-security-policy') as string;
       expect(csp, `${t.name} csp`).toContain(`form-action 'self' ${t.origin}`);
+      expect(csp, `${t.name} never emits a null source`).not.toContain("'self' null");
     }
   });
 

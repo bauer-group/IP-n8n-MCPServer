@@ -159,12 +159,22 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono<AppEnv> {
    * redirect is dropped and the user watches a button do nothing.
    */
   const allowConsentRedirect = (c: Context, redirectUri: string) => {
+    let url: URL;
     try {
-      c.set('consentRedirectOrigin', new URL(redirectUri).origin);
+      url = new URL(redirectUri);
     } catch {
       // An unparseable URI never reaches here — it is validated first — and if
       // it somehow did, the tighter policy is the right failure.
+      return;
     }
+    // `.origin` is the literal string "null" for every non-special scheme, and
+    // this server accepts private-use schemes on purpose: `cursor://…`,
+    // `com.example.app:/cb`, RFC 8252 §7.1. Emitting that "null" produces a
+    // host-source that can never match, which is wordlessly identical to the
+    // `form-action 'self'` that broke the flow in the first place. For those a
+    // CSP scheme-source is the right shape — `cursor:` — and dots are legal in
+    // one, so a reverse-DNS scheme survives intact.
+    c.set('consentRedirectOrigin', url.origin === 'null' ? url.protocol : url.origin);
   };
 
   /** Bounce an error back to a redirect_uri we have already validated. */
