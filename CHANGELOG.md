@@ -1,3 +1,9 @@
+## [0.3.1](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.3.0...v0.3.1) (2026-08-19)
+
+### 🐛 Bug Fixes
+
+* **oauth:** restored the consent claim on a thrown error ([e7d5f71](https://github.com/bauer-group/IP-n8n-MCPServer/commit/e7d5f711b91f205bff9dbe75262f092d9eda9628))
+
 ## [0.3.0](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.2.2...v0.3.0) (2026-08-19)
 
 ### 🚀 Features
