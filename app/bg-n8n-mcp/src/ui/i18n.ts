@@ -134,6 +134,8 @@ const de: Strings = {
     unknown_client: 'Der anfragende Client ist nicht registriert.',
     invalid_redirect: 'Die Rücksprungadresse des Clients passt nicht zur Registrierung.',
     session_expired: 'Die Anmeldung hat zu lange gedauert. Bitte im KI-Client neu verbinden.',
+    consent_already_done:
+      'Diese Anmeldung ist bereits abgeschlossen — die Verbindung steht. Sie können dieses Fenster schließen. (Das Formular wurde ein zweites Mal abgeschickt; der erste Versuch war erfolgreich.)',
   },
 };
 
@@ -198,6 +200,8 @@ const en: Strings = {
     unknown_client: 'The requesting client is not registered.',
     invalid_redirect: 'The client redirect URI does not match its registration.',
     session_expired: 'Sign-in took too long. Please reconnect from your AI client.',
+    consent_already_done:
+      'This sign-in is already complete — you are connected. You can close this window. (The form was submitted a second time; the first attempt succeeded.)',
   },
 };
 

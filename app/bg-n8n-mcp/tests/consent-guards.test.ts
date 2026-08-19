@@ -134,10 +134,34 @@ describe('one consent, one grant', () => {
     // Re-posting a consumed request_id — a back button, a replayed form — must
     // not produce a second grant for the same consent.
     const replay = await submit(requestId, makeN8nKey());
-    expect(replay.status).toBe(400);
-    const body = await replay.text();
-    expect(body).toMatch(/zu lange gedauert|took too long/i);
-    expect(body).not.toContain('name="request_id"');
+    expect(await replay.text()).not.toContain('name="request_id"');
+  });
+
+  it('tells a resubmitted success apart from an expired request', async () => {
+    // Exactly the production sequence that sent everyone hunting for a failure
+    // that had not happened: a 303, then eleven seconds later a second submit
+    // of the same form. Reporting that as "sign-in took too long, reconnect in
+    // your AI client" is false — the user is already connected.
+    fetchStub = stubFetch(async () => n8nWorkflowsOk());
+
+    const requestId = await openConsentForm();
+    expect((await submit(requestId, makeN8nKey())).status).toBe(303);
+
+    const again = await submit(requestId, makeN8nKey());
+    const body = await again.text();
+    expect(body).toMatch(/bereits abgeschlossen|already complete/i);
+    expect(body).not.toMatch(/zu lange gedauert|took too long/i);
+    // Not an error: nothing went wrong, so this must not read as a failure.
+    expect(again.status).toBe(200);
+  });
+
+  it('still reports a genuinely unknown request as expired', async () => {
+    fetchStub = stubFetch(async () => n8nWorkflowsOk());
+    await openConsentForm();
+
+    const unknown = await submit('never-issued-handle', makeN8nKey());
+    expect(unknown.status).toBe(400);
+    expect(await unknown.text()).toMatch(/zu lange gedauert|took too long/i);
   });
 });
 

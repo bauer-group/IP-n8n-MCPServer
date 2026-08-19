@@ -154,7 +154,7 @@ services:
 
   # ── The upstream MCP server: internal only, no Traefik route ───────────────
   n8n-mcp-backend:
-    image: ${BACKEND_IMAGE:-ghcr.io/czlonkowski/n8n-mcp}:${BACKEND_VERSION:-2.69.2}
+    image: ${BACKEND_IMAGE:-ghcr.io/czlonkowski/n8n-mcp}:${BACKEND_VERSION:-2.73.0}
     container_name: ${STACK_NAME:-bg-n8n-mcp}-backend
     restart: unless-stopped
     <<: *logging

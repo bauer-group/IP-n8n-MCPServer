@@ -123,6 +123,7 @@ const NS = {
   code: 'code:',
   token: 'tok:',
   pending: 'pend:',
+  done: 'done:',
   rate: 'rl:',
 } as const;
 
@@ -304,6 +305,34 @@ export class Store {
   async takePendingAuth(requestId: string): Promise<PendingAuth | null> {
     if (!requestId) return null;
     return await this.#consume<PendingAuth>(NS.pending + hashKey(this.#keyring, requestId));
+  }
+
+  /**
+   * Remember that a consent request was carried through to a grant.
+   *
+   * Without this, a second submit of a form whose request has already been
+   * spent is indistinguishable from one that expired, and both were reported
+   * as "sign-in took too long". That message is wrong in the first case and
+   * actively misleading: the user is told to reconnect when they are, in
+   * fact, already connected. Observed in production as a 303 followed eleven
+   * seconds later by an expiry page.
+   *
+   * Keyed by the same HMAC as the request itself, so the raw handle is never
+   * written down, and holding nothing but a marker.
+   */
+  async markConsentCompleted(requestId: string): Promise<void> {
+    if (!requestId) return;
+    await this.#backend.set(
+      NS.done + hashKey(this.#keyring, requestId),
+      '1',
+      PENDING_AUTH_TTL_SECONDS,
+    );
+  }
+
+  /** True when this request was already carried through to a grant. */
+  async wasConsentCompleted(requestId: string): Promise<boolean> {
+    if (!requestId) return false;
+    return (await this.#backend.get(NS.done + hashKey(this.#keyring, requestId))) !== null;
   }
 
   /**

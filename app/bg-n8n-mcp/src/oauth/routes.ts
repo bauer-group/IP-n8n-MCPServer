@@ -274,20 +274,30 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
     const pending = await store.takePendingAuth(requestId);
 
     if (!pending) {
-      // This branch used to be silent, which is why a user reporting "Die
-      // Anmeldung hat zu lange gedauert" could only be answered with a guess.
-      // Three causes reach it and they need different answers: an expired
-      // request, a second submit of one the user already spent, or a stale
-      // form reloaded from history. `had_request_id` separates the last from
-      // the first two without logging the id itself, which is a form handle.
+      // Two very different things arrive here and used to get one answer.
+      //
+      // A request that was already carried through to a grant is the common
+      // one: the form is submitted twice — a second click while the probe
+      // runs, a back button, a reload — and the second submit finds the
+      // record spent. Telling that user "sign-in took too long, reconnect in
+      // your AI client" is false. They are connected. Observed in production
+      // as a 303 followed eleven seconds later by an expiry page, which sent
+      // everyone hunting for a failure that had not happened.
+      //
+      // A request that genuinely expired, or was never issued, is the other.
+      const alreadyDone = await store.wasConsentCompleted(requestId);
       log().warn({
-        evt: 'consent_expired',
+        evt: alreadyDone ? 'consent_resubmitted' : 'consent_expired',
         had_request_id: requestId !== '',
         ip: clientIp(c, config.RATE_LIMITER_TRUSTED_PROXY_HOPS),
       });
       return c.html(
-        errorPage(locale, config.MCP_DISPLAY_NAME, errorText(locale, 'session_expired')),
-        400,
+        errorPage(
+          locale,
+          config.MCP_DISPLAY_NAME,
+          errorText(locale, alreadyDone ? 'consent_already_done' : 'session_expired'),
+        ),
+        alreadyDone ? 200 : 400,
       );
     }
 
@@ -434,6 +444,12 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
         codeChallenge: pending.codeChallenge,
         resource: pending.resource,
       });
+
+      // Only now, with a code actually issued, is this consent complete — and
+      // only now may a resubmit be told "you are already connected". Marking
+      // it a step earlier, next to `spent`, would say that to someone whose
+      // code was never issued and who therefore still has to start over.
+      await store.markConsentCompleted(requestId);
 
       log().info({
         evt: 'consent_granted',
