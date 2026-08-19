@@ -67,7 +67,7 @@ export function securityHeaders(config: Config): MiddlewareHandler<AppEnv> {
    * `script-src 'none'` and no inline script can run on it at all, whatever
    * ends up in the markup.
    */
-  const htmlPolicy = (nonce: string | undefined) =>
+  const htmlPolicy = (nonce: string | undefined, formAction: string | undefined) =>
     [
       "default-src 'none'",
       // The stylesheet is inlined in a <style> element; with script governed by
@@ -77,7 +77,14 @@ export function securityHeaders(config: Config): MiddlewareHandler<AppEnv> {
       nonce ? `script-src 'nonce-${nonce}'` : "script-src 'none'",
       "img-src 'self' data:",
       "connect-src 'self'",
-      "form-action 'self'",
+      // 'self' alone breaks the flow this server exists for. The consent POST
+      // answers 303 to the AI client's callback, and browsers apply
+      // form-action to that redirect too — so the callback origin has to be
+      // named or the redirect is dropped without a word to the user. The
+      // origin comes from the client's REGISTERED redirect URI, validated
+      // before the form was ever rendered, so this widens nothing an attacker
+      // controls.
+      formAction ? `form-action 'self' ${formAction}` : "form-action 'self'",
       "frame-ancestors 'none'",
       "base-uri 'none'",
     ].join('; ');
@@ -97,7 +104,10 @@ export function securityHeaders(config: Config): MiddlewareHandler<AppEnv> {
 
     const contentType = c.res.headers.get('content-type') ?? '';
     if (contentType.includes('text/html')) {
-      c.header('Content-Security-Policy', htmlPolicy(c.get('cspNonce')));
+      c.header(
+        'Content-Security-Policy',
+        htmlPolicy(c.get('cspNonce'), c.get('consentRedirectOrigin')),
+      );
       // The consent screen carries a credential in its form. Never cached.
       c.header('Cache-Control', 'no-store');
     } else if (contentType.includes('application/json') && c.req.path.startsWith('/.well-known/')) {

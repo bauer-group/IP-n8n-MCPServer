@@ -33,6 +33,7 @@
 import { createHash } from 'node:crypto';
 import type { Context } from 'hono';
 import { Hono } from 'hono';
+import type { AppEnv } from '../app.js';
 import type { Config } from '../config.js';
 import { randomToken, safeEqual, seal, unseal } from '../lib/crypto.js';
 import { clientIp, formBody } from '../lib/request.js';
@@ -76,9 +77,9 @@ const BUCKET = { login: 'login', token: 'token', submit: 'submit' } as const;
  */
 const SUBMIT_BUDGET_FACTOR = 6;
 
-export function createOAuthRoutes(deps: OAuthDeps): Hono {
+export function createOAuthRoutes(deps: OAuthDeps): Hono<AppEnv> {
   const { config, store } = deps;
-  const app = new Hono();
+  const app = new Hono<AppEnv>();
   const locales = (c: { req: { header: (n: string) => string | undefined } }) =>
     pickLocale(c.req.header('accept-language'));
 
@@ -148,6 +149,23 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
   // ───────────────────────────────────────────────────────────────────────────
   // Authorize
   // ───────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Name the callback origin in `form-action` for this response.
+   *
+   * Every page that renders the consent form must do this. The form posts to
+   * this server, but the answer is a 303 to the AI client — and browsers apply
+   * `form-action` to that redirect as well, so an unlisted origin means the
+   * redirect is dropped and the user watches a button do nothing.
+   */
+  const allowConsentRedirect = (c: Context, redirectUri: string) => {
+    try {
+      c.set('consentRedirectOrigin', new URL(redirectUri).origin);
+    } catch {
+      // An unparseable URI never reaches here — it is validated first — and if
+      // it somehow did, the tighter policy is the right failure.
+    }
+  };
 
   /** Bounce an error back to a redirect_uri we have already validated. */
   const redirectError = (
@@ -245,6 +263,7 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
       createdAt: Date.now(),
     });
 
+    allowConsentRedirect(c, redirectUri);
     return c.html(
       consentPage({
         locale,
@@ -335,8 +354,11 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
        * record would work, and would also mean the invariant is stated twice
        * and can drift.
        */
-      const retry = async (code: string, status: 400 | 429 = 400) =>
-        c.html(
+      const retry = async (code: string, status: 400 | 429 = 400) => {
+        // Also on a retry: the next submit from this re-rendered form is the
+        // one that may succeed, and it needs the same permission to land.
+        allowConsentRedirect(c, pending.redirectUri);
+        return c.html(
           consentPage({
             locale,
             displayName: config.MCP_DISPLAY_NAME,
@@ -348,6 +370,7 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
           }),
           status,
         );
+      };
 
       // ── Brute-force gate ─────────────────────────────────────────────────────
       // Keyed on the client IP AND the typed username. IP alone punishes everyone

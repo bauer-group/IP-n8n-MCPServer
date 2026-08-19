@@ -38,6 +38,16 @@ export interface AppEnv {
      * the consent screen — to `script-src 'none'`.
      */
     cspNonce?: string;
+    /**
+     * Origin of the client redirect URI this response may hand the browser to.
+     *
+     * `form-action` is enforced across the redirect that FOLLOWS a form
+     * submission, not just on the submission itself. Without the callback
+     * origin listed, the browser accepts the POST, receives our 303 to the AI
+     * client, and refuses to follow it — silently. The user sees a button that
+     * does nothing while the server log records a completed consent.
+     */
+    consentRedirectOrigin?: string;
   };
 }
 

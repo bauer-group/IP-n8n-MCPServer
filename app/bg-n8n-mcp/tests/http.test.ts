@@ -179,6 +179,48 @@ describe('security headers', () => {
     expect(response.headers.get('cache-control')).toBe('no-store');
   });
 
+  it('lets the consent form redirect to the client callback', async () => {
+    // The bug this pins: browsers apply form-action to the redirect that
+    // FOLLOWS a form submission, not only to the submission. With
+    // `form-action 'self'` alone the consent POST succeeded server-side —
+    // grant created, code issued, 303 sent — and the browser silently refused
+    // to follow it. The user saw a Connect button that did nothing, the AI
+    // client never received the code, and the logs showed a completed sign-in.
+    const clientId = await (async () => {
+      const r = await harness.fetch('/register', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          client_name: 'Claude',
+          redirect_uris: ['https://claude.ai/api/mcp/auth_callback'],
+          token_endpoint_auth_method: 'none',
+          grant_types: ['authorization_code'],
+          response_types: ['code'],
+        }),
+      });
+      return ((await r.json()) as { client_id: string }).client_id;
+    })();
+
+    const page = await harness.fetch(
+      `/authorize?response_type=code&client_id=${clientId}` +
+        `&redirect_uri=${encodeURIComponent('https://claude.ai/api/mcp/auth_callback')}` +
+        '&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256' +
+        `&resource=${encodeURIComponent(`${BASE_URL}/i/${TENANT}/mcp`)}`,
+    );
+    expect(page.status).toBe(200);
+
+    const csp = page.headers.get('content-security-policy') as string;
+    expect(csp).toContain("form-action 'self' https://claude.ai");
+    // Only the origin — never the full callback path, and never a wildcard.
+    expect(csp).not.toContain('/api/mcp/auth_callback');
+  });
+
+  it('does not widen form-action on pages that never redirect out', async () => {
+    const csp = (await harness.fetch('/')).headers.get('content-security-policy') as string;
+    expect(csp).toContain("form-action 'self'");
+    expect(csp).not.toContain('claude.ai');
+  });
+
   it('uses a nonce, not unsafe-inline, for the landing page script', async () => {
     const response = await harness.fetch('/');
     const csp = response.headers.get('content-security-policy') as string;
