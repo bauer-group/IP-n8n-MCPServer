@@ -1,3 +1,13 @@
+## [0.3.0](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.2.2...v0.3.0) (2026-08-19)
+
+### 🚀 Features
+
+* **oauth:** logged the expired-consent branch ([160cc06](https://github.com/bauer-group/IP-n8n-MCPServer/commit/160cc06c76d667dd38fc237c5f365e01cb765853))
+
+### 🐛 Bug Fixes
+
+* **oauth:** gave the consent screen thirty minutes ([7cf17a2](https://github.com/bauer-group/IP-n8n-MCPServer/commit/7cf17a259c2367784213a5e8fbc54ae38a310da7))
+
 ## [0.2.2](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.2.1...v0.2.2) (2026-08-16)
 
 ## [0.2.1](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.2.0...v0.2.1) (2026-08-15)
