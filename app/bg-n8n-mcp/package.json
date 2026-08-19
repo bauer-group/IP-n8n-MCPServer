@@ -1,6 +1,6 @@
 {
   "name": "bg-n8n-mcp",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "type": "module",
   "description": "BAUER GROUP n8n MCP Server — OAuth 2.1 MCP server for n8n, fronting n8n-mcp as a remote connector with each user's own n8n API key",

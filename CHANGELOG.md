@@ -1,3 +1,9 @@
+## [0.3.3](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.3.2...v0.3.3) (2026-08-19)
+
+### 🐛 Bug Fixes
+
+* **security:** let the consent form reach the client callback ([9741409](https://github.com/bauer-group/IP-n8n-MCPServer/commit/9741409be06404b51a17d2748b7e0a5a84da6ac2))
+
 ## [0.3.2](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.3.1...v0.3.2) (2026-08-19)
 
 ### 🐛 Bug Fixes
