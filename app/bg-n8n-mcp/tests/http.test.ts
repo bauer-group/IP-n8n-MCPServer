@@ -215,6 +215,67 @@ describe('security headers', () => {
     expect(csp).not.toContain('/api/mcp/auth_callback');
   });
 
+  it('names the callback origin for every client shape, not just claude.ai', async () => {
+    // Three clients that reach this server in practice and differ in exactly
+    // the field this policy is built from. If the origin were hardcoded, or
+    // taken from anywhere but the validated redirect URI, one of these would
+    // silently lose its redirect the way claude.ai did.
+    const cases = [
+      {
+        name: 'web/claude',
+        type: 'web',
+        uri: 'https://claude.ai/api/mcp/auth_callback',
+        origin: 'https://claude.ai',
+      },
+      {
+        name: 'web/chatgpt',
+        type: 'web',
+        uri: 'https://chatgpt.com/connector_platform_oauth_redirect',
+        origin: 'https://chatgpt.com',
+      },
+      {
+        name: 'web/copilot',
+        type: 'web',
+        uri: 'https://copilot.microsoft.com/mcp/callback',
+        origin: 'https://copilot.microsoft.com',
+      },
+      // RFC 8252 native client on an ephemeral loopback port — Claude Code.
+      {
+        name: 'native/loopback',
+        type: 'native',
+        uri: 'http://127.0.0.1:49731/callback',
+        origin: 'http://127.0.0.1:49731',
+      },
+    ];
+
+    for (const t of cases) {
+      const reg = await harness.fetch('/register', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          client_name: t.name,
+          redirect_uris: [t.uri],
+          application_type: t.type,
+          token_endpoint_auth_method: 'none',
+          grant_types: ['authorization_code'],
+          response_types: ['code'],
+        }),
+      });
+      expect(reg.status, `${t.name} registration`).toBe(201);
+      const clientId = ((await reg.json()) as { client_id: string }).client_id;
+
+      const page = await harness.fetch(
+        `/authorize?response_type=code&client_id=${clientId}` +
+          `&redirect_uri=${encodeURIComponent(t.uri)}` +
+          '&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256' +
+          `&resource=${encodeURIComponent(`${BASE_URL}/i/${TENANT}/mcp`)}`,
+      );
+      expect(page.status, `${t.name} authorize`).toBe(200);
+      const csp = page.headers.get('content-security-policy') as string;
+      expect(csp, `${t.name} csp`).toContain(`form-action 'self' ${t.origin}`);
+    }
+  });
+
   it('does not widen form-action on pages that never redirect out', async () => {
     const csp = (await harness.fetch('/')).headers.get('content-security-policy') as string;
     expect(csp).toContain("form-action 'self'");
