@@ -129,10 +129,20 @@ const NS = {
 /**
  * How long a consent screen may sit open before its request expires.
  *
- * Ten minutes: long enough to go and create an API key in another tab, short
- * enough that an abandoned tab cannot be submitted the next morning.
+ * Thirty minutes. Ten was the original guess at "long enough to go and create
+ * an API key in another tab", and it was wrong in the direction that costs a
+ * user the whole flow: the real journey is log in to n8n, find Settings → n8n
+ * API, create a key, name it, copy it, come back — with an interruption
+ * somewhere in the middle. Expiring mid-journey drops them on an error page
+ * whose only advice is to start over in the AI client.
+ *
+ * The record holds no credential — clientId, redirectUri, state, the PKCE
+ * challenge (public by construction), hostname and resource. The single-use
+ * secret in this flow is the authorization code, and that still lives
+ * AUTH_CODE_TTL seconds (120 by default). Lengthening this widens the window
+ * for submitting an abandoned tab, not for replaying anything.
  */
-const PENDING_AUTH_TTL_SECONDS = 600;
+const PENDING_AUTH_TTL_SECONDS = 1_800;
 
 // ─── Store ───────────────────────────────────────────────────────────────────
 
