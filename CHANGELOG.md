@@ -1,3 +1,9 @@
+## [0.3.2](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.3.1...v0.3.2) (2026-08-19)
+
+### 🐛 Bug Fixes
+
+* **oauth:** stopped reporting a completed sign-in as expired ([2057198](https://github.com/bauer-group/IP-n8n-MCPServer/commit/2057198874fd973c8b2f6f47ed329a326d939431))
+
 ## [0.3.1](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.3.0...v0.3.1) (2026-08-19)
 
 ### 🐛 Bug Fixes
