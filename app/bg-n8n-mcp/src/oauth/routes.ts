@@ -274,6 +274,17 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono {
     const pending = await store.takePendingAuth(requestId);
 
     if (!pending) {
+      // This branch used to be silent, which is why a user reporting "Die
+      // Anmeldung hat zu lange gedauert" could only be answered with a guess.
+      // Three causes reach it and they need different answers: an expired
+      // request, a second submit of one the user already spent, or a stale
+      // form reloaded from history. `had_request_id` separates the last from
+      // the first two without logging the id itself, which is a form handle.
+      log().warn({
+        evt: 'consent_expired',
+        had_request_id: requestId !== '',
+        ip: clientIp(c, config.RATE_LIMITER_TRUSTED_PROXY_HOPS),
+      });
       return c.html(
         errorPage(locale, config.MCP_DISPLAY_NAME, errorText(locale, 'session_expired')),
         400,
