@@ -1,3 +1,13 @@
+## [0.4.0](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.3.4...v0.4.0) (2026-08-20)
+
+### 🚀 Features
+
+* **consent:** named the redirect target on the form ([19f0dba](https://github.com/bauer-group/IP-n8n-MCPServer/commit/19f0dbacf78a4b6b301be91bdda1dc54bafd4a42))
+
+### 🐛 Bug Fixes
+
+* **oauth:** bounded unauthenticated endpoints ([07b068e](https://github.com/bauer-group/IP-n8n-MCPServer/commit/07b068eab8243bdfe12ec4f65e4d43ff729b59af))
+
 ## [0.3.4](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.3.3...v0.3.4) (2026-08-19)
 
 ### 🐛 Bug Fixes
