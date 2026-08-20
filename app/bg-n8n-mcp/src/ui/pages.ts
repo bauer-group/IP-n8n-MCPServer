@@ -102,6 +102,7 @@ button:focus-visible{outline:2px solid var(--orange-800);outline-offset:2px}
 .meta{margin-top:1.5rem;padding-top:1.15rem;border-top:1px solid var(--border);
   font-size:.8rem;color:var(--text-muted)}
 .meta dt{font-weight:600;display:inline}
+.meta code{font-family:var(--mono);font-size:.95em;overflow-wrap:anywhere}
 .meta dd{display:inline;margin-left:.35rem}
 .meta div+div{margin-top:.35rem}
 .foot{padding:1rem 2rem;background:var(--bg-subtle);border-top:1px solid var(--border);
@@ -132,6 +133,18 @@ export interface ConsentPageInput {
   readonly hostname: string;
   readonly clientName: string | null;
   /**
+   * Origin the authorization code will be handed to, from
+   * `consentRedirectTarget` in oauth/routes.ts — the same value that becomes
+   * the CSP `form-action` source for this response.
+   *
+   * Shared rather than recomputed here on purpose: the point of showing it is
+   * that a user can check where their authorization goes, and a label derived
+   * independently of the policy could drift from it and quietly say the wrong
+   * thing. Null only if the URI does not parse, in which case the row is
+   * omitted rather than guessed at.
+   */
+  readonly redirectTarget: string | null;
+  /**
    * Opaque, signed-by-storage handle for the pending authorization request.
    * The full request context lives server-side under this key; only the handle
    * travels through the form, so a user cannot rewrite `redirect_uri` or
@@ -160,6 +173,13 @@ export function consentPage(input: ConsentPageInput): string {
   const alert = input.error ? `<p class="alert" role="alert">${escapeHtml(input.error)}</p>` : '';
   const client = input.clientName
     ? `<div><dt>${escapeHtml(t.clientLabel)}:</dt><dd>${escapeHtml(input.clientName)}</dd></div>`
+    : '';
+  // Monospaced, because the job this row exists for is telling `claude.ai`
+  // from a homoglyph of it, and a proportional font is where that comparison
+  // goes to die.
+  const redirect = input.redirectTarget
+    ? `<div><dt>${escapeHtml(t.redirectLabel)}:</dt><dd><code>${escapeHtml(input.redirectTarget)}</code></dd></div>
+    <div>${escapeHtml(t.redirectHint)}</div>`
     : '';
 
   return shell(
@@ -192,6 +212,7 @@ export function consentPage(input: ConsentPageInput): string {
   <button type="submit">${escapeHtml(t.submit)}</button>
   <dl class="meta">
     ${client}
+    ${redirect}
     <div>${escapeHtml(t.privacyNote)}</div>
   </dl>
 </form>

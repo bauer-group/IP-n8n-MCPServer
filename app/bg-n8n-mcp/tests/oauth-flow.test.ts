@@ -565,6 +565,52 @@ describe('revocation', () => {
 });
 
 describe('hardening', () => {
+  it('shows the same origin on the consent screen that the CSP permits', async () => {
+    // This is the invariant, not the rendering. A consent screen that says
+    // `claude.ai` while `form-action` permits somewhere else would convert a
+    // user's correct instinct to check into false reassurance — so both come
+    // from one function, and this test is what keeps them from drifting apart.
+    const clientId = await registerClaude();
+    const { challenge } = await pkcePair();
+    const page = await harness.fetch(
+      `/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(REDIRECT)}` +
+        `&code_challenge=${challenge}&code_challenge_method=S256&resource=${encodeURIComponent(RESOURCE)}`,
+    );
+    const html = await page.text();
+
+    const shown = /<dd><code>([^<]+)<\/code><\/dd>/.exec(html)?.[1];
+    const permitted = /form-action 'self' (\S+?)(?=;|$)/.exec(
+      page.headers.get('content-security-policy') ?? '',
+    )?.[1];
+
+    expect(shown).toBe('https://claude.ai');
+    expect(permitted).toBe(shown);
+  });
+
+  it('keeps naming the origin when the form comes back with an error', async () => {
+    // The retry path re-renders the page from `pending`, not from the original
+    // query. If it forgot the target, the row would vanish on exactly the
+    // second look — after a user mistyped a key and is paying more attention.
+    const clientId = await registerClaude();
+    const { challenge } = await pkcePair();
+    const page = await harness.fetch(
+      `/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(REDIRECT)}` +
+        `&code_challenge=${challenge}&code_challenge_method=S256&resource=${encodeURIComponent(RESOURCE)}`,
+    );
+    const requestId = /name="request_id" value="([^"]+)"/.exec(await page.text())?.[1] as string;
+
+    const retry = await harness.fetch('/authorize', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ request_id: requestId, username: '', api_key: 'x' }),
+    });
+    expect(retry.status).toBe(400);
+    expect(await retry.text()).toContain('<code>https://claude.ai</code>');
+    expect(retry.headers.get('content-security-policy')).toContain(
+      "form-action 'self' https://claude.ai",
+    );
+  });
+
   it('rate-limits client registration per IP', async () => {
     // /register is unauthenticated by design, and every accepted call writes a
     // record that lives for AUTH_CLIENT_TTL. Without a bound, one caller

@@ -63,6 +63,10 @@ export interface Strings {
   readonly apiKeyHint: string;
   readonly submit: string;
   readonly clientLabel: string;
+  /** Label for the origin the authorization code is handed to. */
+  readonly redirectLabel: string;
+  /** The instruction that makes the origin above worth showing. */
+  readonly redirectHint: string;
   readonly privacyNote: string;
   readonly errorTitle: string;
   readonly backHint: string;
@@ -105,6 +109,9 @@ const de: Strings = {
   apiKeyHint: 'In n8n unter Einstellungen → n8n API → API-Key erstellen.',
   submit: 'Verbinden',
   clientLabel: 'Anfragender Client',
+  redirectLabel: 'Weiterleitung an',
+  redirectHint:
+    'Prüfen Sie, ob diese Adresse zu der Anwendung gehört, die Sie verbinden möchten. Der Name des Clients ist frei wählbar — die Adresse nicht.',
   privacyNote:
     'Ihre Berechtigungen in n8n bleiben unverändert — der KI-Client sieht genau das, was Sie sehen dürfen.',
   errorTitle: 'Das hat nicht geklappt',
@@ -175,6 +182,9 @@ const en: Strings = {
   apiKeyHint: 'In n8n: Settings → n8n API → Create an API key.',
   submit: 'Connect',
   clientLabel: 'Requesting client',
+  redirectLabel: 'Redirects to',
+  redirectHint:
+    'Check that this address belongs to the application you meant to connect. A client can call itself anything; the address it gets is registered.',
   privacyNote:
     'Your n8n permissions are unchanged — the AI client sees exactly what you are allowed to see.',
   errorTitle: 'That did not work',

@@ -97,6 +97,7 @@ describe('consentPage', () => {
     displayName: 'BAUER GROUP n8n',
     hostname: TENANT,
     clientName: null,
+    redirectTarget: 'https://claude.ai',
     requestId: 'req-1',
     username: '',
     error: null,
@@ -125,6 +126,36 @@ describe('consentPage', () => {
 
   it('posts back to /authorize', () => {
     expect(consentPage(base)).toContain('action="/authorize"');
+  });
+
+  it('names the origin the authorization will be handed to', () => {
+    // The client NAME is chosen by whoever registered; the origin is not. It is
+    // the only thing on this page that distinguishes the app the user meant to
+    // connect from one merely calling itself by that name.
+    const html = consentPage(base);
+    expect(html).toContain('<code>https://claude.ai</code>');
+    expect(html).toContain('Weiterleitung an');
+  });
+
+  it('shows the scheme for a private-use redirect, not the string "null"', () => {
+    // `new URL('cursor://cb').origin` is the literal "null"; printing that would
+    // be gibberish exactly where the user is meant to be checking something.
+    const html = consentPage({ ...base, redirectTarget: 'cursor:' });
+    expect(html).toContain('<code>cursor:</code>');
+    expect(html).not.toContain('>null<');
+  });
+
+  it('omits the row entirely rather than guessing when there is no target', () => {
+    const html = consentPage({ ...base, redirectTarget: null });
+    expect(html).not.toContain('Weiterleitung an');
+    // The rest of the page is unaffected.
+    expect(html).toContain('name="api_key"');
+  });
+
+  it('escapes a hostile redirect target', () => {
+    const html = consentPage({ ...base, redirectTarget: '<img src=x onerror=alert(1)>' });
+    expect(html).not.toContain('<img src=x');
+    expect(html).toContain('&lt;img src=x');
   });
 });
 

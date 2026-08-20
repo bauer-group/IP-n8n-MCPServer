@@ -197,22 +197,11 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono<AppEnv> {
    * redirect is dropped and the user watches a button do nothing.
    */
   const allowConsentRedirect = (c: Context, redirectUri: string) => {
-    let url: URL;
-    try {
-      url = new URL(redirectUri);
-    } catch {
-      // An unparseable URI never reaches here — it is validated first — and if
-      // it somehow did, the tighter policy is the right failure.
-      return;
-    }
-    // `.origin` is the literal string "null" for every non-special scheme, and
-    // this server accepts private-use schemes on purpose: `cursor://…`,
-    // `com.example.app:/cb`, RFC 8252 §7.1. Emitting that "null" produces a
-    // host-source that can never match, which is wordlessly identical to the
-    // `form-action 'self'` that broke the flow in the first place. For those a
-    // CSP scheme-source is the right shape — `cursor:` — and dots are legal in
-    // one, so a reverse-DNS scheme survives intact.
-    c.set('consentRedirectOrigin', url.origin === 'null' ? url.protocol : url.origin);
+    // An unparseable URI never reaches here — it is validated first — and if it
+    // somehow did, `null` leaves the tighter policy in place, which is the
+    // right failure.
+    const origin = consentRedirectTarget(redirectUri);
+    if (origin) c.set('consentRedirectOrigin', origin);
   };
 
   /** Bounce an error back to a redirect_uri we have already validated. */
@@ -362,6 +351,7 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono<AppEnv> {
         displayName: config.MCP_DISPLAY_NAME,
         hostname: tenant.hostname,
         clientName: client.clientName,
+        redirectTarget: consentRedirectTarget(redirectUri),
         requestId,
         username: '',
         error: null,
@@ -456,6 +446,7 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono<AppEnv> {
             displayName: config.MCP_DISPLAY_NAME,
             hostname: pending.hostname,
             clientName: client.clientName,
+            redirectTarget: consentRedirectTarget(pending.redirectUri),
             requestId,
             username,
             error: errorText(locale, code),
@@ -797,6 +788,37 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono<AppEnv> {
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * The origin a completed consent will hand the authorization code to.
+ *
+ * One function with two consumers — the CSP `form-action` source, and the label
+ * the user reads on the consent screen — and that is the whole point. Those two
+ * must never disagree: a screen that says `claude.ai` while the policy permits
+ * somewhere else is worse than showing nothing at all, because it converts a
+ * user's correct instinct to check into false reassurance.
+ *
+ * `.origin` is the literal string "null" for every non-special scheme, and this
+ * server accepts private-use schemes on purpose (`cursor://…`,
+ * `com.example.app:/cb`, RFC 8252 §7.1). Emitting that "null" would produce a
+ * CSP host-source that can never match — wordlessly identical to the
+ * `form-action 'self'` that broke the flow in the first place — and would read
+ * as gibberish on the page. For those the scheme itself is both the correct CSP
+ * scheme-source and the identifying thing to show; dots are legal in one, so a
+ * reverse-DNS scheme survives intact.
+ *
+ * Returns null only for a URI that does not parse, which validation has already
+ * excluded by the time either consumer calls this.
+ */
+export function consentRedirectTarget(redirectUri: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(redirectUri);
+  } catch {
+    return null;
+  }
+  return url.origin === 'null' ? url.protocol : url.origin;
+}
 
 /**
  * Strip a trailing slash from a resource identifier before comparing.
