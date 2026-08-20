@@ -19,6 +19,29 @@ describe('loadConfig', () => {
     expect(config.isDevelopment).toBe(true);
   });
 
+  it('defaults AUTH_CLIENT_TTL to 90 days', () => {
+    // Floor: comfortably above the 30-day refresh lifetime, so a returning user
+    // whose grant expired still finds their client registered. Ceiling: Redis,
+    // which runs `maxmemory 256mb` with `noeviction` — registration is
+    // unauthenticated, so the worst case is RATE_LIMITER_REGISTER_MAX × this.
+    expect(loadConfig(testEnv()).AUTH_CLIENT_TTL).toBe(90 * 86_400);
+    expect(() => loadConfig(testEnv({ AUTH_CLIENT_TTL: '63072001' }))).toThrow(/AUTH_CLIENT_TTL/);
+  });
+
+  it('caches CIMD documents for an hour, not for the registration lifetime', () => {
+    // The two are different things: a registration is lost if it expires, a
+    // cached document is merely refetched. Keeping the cache is the expensive
+    // direction, because nothing revalidates it.
+    const config = loadConfig(testEnv());
+    expect(config.AUTH_CIMD_CACHE_TTL).toBe(3_600);
+    expect(config.AUTH_CIMD_CACHE_TTL).toBeLessThan(config.AUTH_CLIENT_TTL);
+    // A day is the ceiling — past that the staleness window stops being
+    // something an operator can wait out.
+    expect(() => loadConfig(testEnv({ AUTH_CIMD_CACHE_TTL: '86401' }))).toThrow(
+      /AUTH_CIMD_CACHE_TTL/,
+    );
+  });
+
   it('strips trailing slashes from PUBLIC_BASE_URL', () => {
     // The base URL is concatenated into every resource identifier; a stray
     // slash produces `…//i/host/mcp`, which no longer matches the `resource`

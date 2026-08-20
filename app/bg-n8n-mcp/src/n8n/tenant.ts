@@ -233,6 +233,24 @@ async function addressesArePublic(hostname: string): Promise<boolean | null> {
 }
 
 /**
+ * Is this host — a literal address or a name — entirely in public address space?
+ *
+ * Three-valued on purpose: `null` means "could not resolve", which callers must
+ * keep distinct from `false` ("resolved, and not public"). Collapsing the two
+ * loses the difference between an outage and an attack.
+ *
+ * Exported because `oauth/clients.ts` needs exactly this check before fetching a
+ * Client ID Metadata Document. That is the same primitive as the tenant path —
+ * an unauthenticated caller naming a host this gateway will then connect to —
+ * and it therefore needs the same deadline, the same cache and the same
+ * every-record rule. It had its own `lookup()` with none of the three.
+ */
+export async function hostResolvesPublic(hostname: string): Promise<boolean | null> {
+  if (isIP(hostname)) return isPublicAddress(hostname);
+  return await addressesArePublic(hostname);
+}
+
+/**
  * Cheap tenant check: parse and allowlist only, no DNS.
  *
  * Used where the answer is "does this gateway serve that instance at all" and
@@ -275,14 +293,11 @@ export async function resolveTenant(config: Config, raw: string): Promise<Tenant
 
   if (!config.N8N_ALLOW_PRIVATE_ADDRESSES) {
     // A literal IP can never be allowlisted safely — it bypasses the name-based
-    // allowlist's whole premise — but check it directly rather than resolving.
-    if (isIP(hostname)) {
-      if (!isPublicAddress(hostname)) return { ok: false, reason: 'private_address' };
-    } else {
-      const isPublic = await addressesArePublic(hostname);
-      if (isPublic === null) return { ok: false, reason: 'unresolvable' };
-      if (!isPublic) return { ok: false, reason: 'private_address' };
-    }
+    // allowlist's whole premise — but `hostResolvesPublic` checks it directly
+    // rather than sending it to a resolver.
+    const isPublic = await hostResolvesPublic(hostname);
+    if (isPublic === null) return { ok: false, reason: 'unresolvable' };
+    if (!isPublic) return { ok: false, reason: 'private_address' };
   }
 
   return { ok: true, hostname, origin: `https://${hostname}` };

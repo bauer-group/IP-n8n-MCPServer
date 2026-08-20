@@ -138,8 +138,45 @@ const EnvSchema = z.object({
   AUTH_ACCESS_TOKEN_TTL: intFromEnv(60, 86_400).default(3_600),
   AUTH_REFRESH_TOKEN_TTL: intFromEnv(3_600, 31_536_000).default(2_592_000),
   AUTH_CODE_TTL: intFromEnv(30, 600).default(120),
-  /** How long a dynamically registered client record survives without use. */
-  AUTH_CLIENT_TTL: intFromEnv(86_400, 31_536_000).default(31_536_000),
+  /**
+   * How long a **dynamically registered** client record survives without use.
+   *
+   * 90 days, and the number is arithmetic rather than taste. The record is read
+   * on exactly one path — `/authorize`; the token exchange, the refresh and the
+   * proxy never look a client up — so expiry cannot break a live connector, it
+   * can only fail a *new* authorization. The functional floor is therefore the
+   * refresh-token lifetime (30 days, extended on every use): a user has to be
+   * completely inactive for longer than this before the record matters at all,
+   * and a DCR client that finds its registration gone simply registers again,
+   * which it does on every reconnect anyway.
+   *
+   * The ceiling on the other side is Redis. Registration is unauthenticated, so
+   * the worst case is RATE_LIMITER_REGISTER_MAX × this TTL of ~334-byte records
+   * from one address — 21 MB at 90 days, 158 MB at 690. The deployed store runs
+   * `maxmemory 256mb` with `maxmemory-policy noeviction`, where "full" does not
+   * mean "evict something", it means no further grant or token can be written.
+   * Raising this materially means raising REDIS_MAXMEMORY with it.
+   */
+  AUTH_CLIENT_TTL: intFromEnv(86_400, 63_072_000).default(7_776_000),
+
+  /**
+   * How long a fetched Client ID Metadata Document is cached.
+   *
+   * Separate from AUTH_CLIENT_TTL because a CIMD record is not a registration —
+   * it is a *copy* of a document the client publishes and controls. The two
+   * fail in opposite directions, which is why one knob could not serve both:
+   * losing a registration costs a re-registration, while losing a cache entry
+   * costs one refetch, and *keeping* a cache entry too long is the expensive
+   * mistake. There is no revalidation path — a stored record wins every lookup
+   * — so a client that rotates its redirect URIs is rejected with
+   * `invalid_redirect` for exactly this long, with no way to recover but
+   * flushing the store.
+   *
+   * An hour keeps the refetch cost negligible (authorizations are rare per
+   * user, and the CIMD rate limit counts only cache misses) while bounding that
+   * staleness window to something an operator can wait out.
+   */
+  AUTH_CIMD_CACHE_TTL: intFromEnv(60, 86_400).default(3_600),
 
   /**
    * Optional allowlist of redirect URI prefixes accepted at dynamic client
@@ -155,6 +192,40 @@ const EnvSchema = z.object({
   /** Failed key submissions per identity before the login form locks out. */
   RATE_LIMITER_LOGIN_MAX: intFromEnv(1, 1_000).default(10),
   RATE_LIMITER_LOGIN_WINDOW: intFromEnv(60, 86_400).default(900),
+  /**
+   * Client registrations per IP per window.
+   *
+   * `POST /register` is unauthenticated by design — that is what lets a client
+   * we have never heard of connect — and every accepted call writes a record
+   * that lives for AUTH_CLIENT_TTL. Without a bound, one caller can fill the
+   * store, and the TTL decides how long it stays filled.
+   *
+   * The default is generous rather than tight, because the traffic being
+   * bounded is legitimate on the same shape: DCR clients mint a fresh record on
+   * every reconnect, and a whole office arrives from one NAT address. 30 per
+   * hour per IP is far above what reconnecting humans produce and far below
+   * what makes filling a store worthwhile.
+   */
+  RATE_LIMITER_REGISTER_MAX: intFromEnv(1, 100_000).default(30),
+  RATE_LIMITER_REGISTER_WINDOW: intFromEnv(60, 86_400).default(3_600),
+
+  /**
+   * Client ID Metadata Document fetches per IP per window.
+   *
+   * Resolving a CIMD client id means fetching a URL the caller named, from an
+   * unauthenticated request — a resolver query and an HTTPS request, both
+   * pointed wherever the caller likes. The guards on that fetch (https only,
+   * public addresses only, no redirects, 32 KB, 4s) bound what one call can do;
+   * this bounds how many calls there are.
+   *
+   * Only *uncached* resolutions count. A client whose document this gateway has
+   * already fetched costs nothing to serve, so the everyday case — the same
+   * handful of AI clients reconnecting — never touches this budget, while an
+   * attacker naming a fresh URL each time hits it immediately.
+   */
+  RATE_LIMITER_CIMD_MAX: intFromEnv(1, 100_000).default(30),
+  RATE_LIMITER_CIMD_WINDOW: intFromEnv(60, 86_400).default(3_600),
+
   /** Token-endpoint attempts per client IP per window. */
   RATE_LIMITER_TOKEN_MAX: intFromEnv(1, 10_000).default(60),
   RATE_LIMITER_TOKEN_WINDOW: intFromEnv(10, 3_600).default(60),

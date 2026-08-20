@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { compileHostMatcher } from '../src/config.js';
 import {
   checkTenant,
+  hostResolvesPublic,
   isPublicIPv4,
   isPublicIPv6,
   parseHostname,
@@ -143,6 +144,23 @@ describe('isPublicIPv6', () => {
 
   it('accepts a normal global address', () => {
     expect(isPublicIPv6('2606:4700:4700::1111')).toBe(true);
+  });
+});
+
+describe('hostResolvesPublic', () => {
+  // Exported so oauth/clients.ts can share the tenant path's resolver — its own
+  // lookup had neither a deadline nor a cache, which made an unauthenticated
+  // /authorize worth one uncached resolver query aimed wherever the caller
+  // liked. Literal addresses are answered without touching a resolver at all,
+  // which is what keeps this test free of DNS.
+  it.each([
+    ['a public IPv4 literal', '93.184.216.34', true],
+    ['a private IPv4 literal', '10.0.0.5', false],
+    ['the cloud metadata address', '169.254.169.254', false],
+    ['IPv6 loopback', '::1', false],
+    ['an IPv4-mapped private address', '::ffff:10.0.0.1', false],
+  ])('answers %s without a resolver', async (_label, host, expected) => {
+    expect(await hostResolvesPublic(host)).toBe(expected);
   });
 });
 

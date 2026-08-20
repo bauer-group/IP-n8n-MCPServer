@@ -202,12 +202,29 @@ export class Store {
 
   // ── Clients ────────────────────────────────────────────────────────────────
 
+  /**
+   * Persist a client record.
+   *
+   * The lifetime is decided here, from what the record *is*, rather than passed
+   * in by the caller — because the two kinds are not one thing with two labels
+   * and they fail in opposite directions:
+   *
+   *  - a `dcr` record **is** the registration. Losing it means the client has
+   *    to register again, so it lives AUTH_CLIENT_TTL: long enough to cover a
+   *    returning user whose grant expired months ago.
+   *  - a `cimd` record is a **cache** of a document the client publishes and
+   *    controls. Losing it costs one refetch. Keeping it is the costly
+   *    direction: `getClient` wins on every lookup and nothing revalidates, so
+   *    a client that rotates its redirect URIs stays rejected for exactly this
+   *    long. Hence AUTH_CIMD_CACHE_TTL, in hours rather than months.
+   *
+   * Deciding it from `client.source` rather than at the two call sites is what
+   * keeps the rule un-drifted: a third caller cannot pick the wrong one.
+   */
   async putClient(client: OAuthClient): Promise<void> {
-    await this.#backend.set(
-      NS.client + client.clientId,
-      JSON.stringify(client),
-      this.#config.AUTH_CLIENT_TTL,
-    );
+    const ttlSeconds =
+      client.source === 'cimd' ? this.#config.AUTH_CIMD_CACHE_TTL : this.#config.AUTH_CLIENT_TTL;
+    await this.#backend.set(NS.client + client.clientId, JSON.stringify(client), ttlSeconds);
   }
 
   async getClient(clientId: string): Promise<OAuthClient | null> {

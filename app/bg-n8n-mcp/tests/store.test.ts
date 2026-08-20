@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { randomToken } from '../src/lib/crypto.js';
+import type { StoreBackend } from '../src/store/backend.js';
 import { Store } from '../src/store/index.js';
 import { MemoryBackend } from '../src/store/memory.js';
 import { silentLogger, testConfig } from './helpers.js';
@@ -26,6 +27,67 @@ const grantInput = {
   username: 'kb@example.com',
   n8nUserId: 'user-1',
 };
+
+/**
+ * A backend that records the TTL every write was given.
+ *
+ * MemoryBackend keeps an absolute `expiresAt` and exposes no way to read it
+ * back, and asserting on a TTL by waiting for expiry would make the suite slow
+ * and flaky. What matters here is only which number was *passed*.
+ */
+function recordingBackend() {
+  const writes: Array<{ key: string; ttlSeconds: number }> = [];
+  const inner = new MemoryBackend(0);
+  const backend: StoreBackend = {
+    get: (key) => inner.get(key),
+    set: (key, value, ttlSeconds) => {
+      writes.push({ key, ttlSeconds });
+      return inner.set(key, value, ttlSeconds);
+    },
+    take: (key) => inner.take(key),
+    incr: (key, ttlSeconds) => inner.incr(key, ttlSeconds),
+    del: (key) => inner.del(key),
+    ping: () => inner.ping(),
+    close: () => inner.close(),
+  };
+  return { backend, writes };
+}
+
+describe('client records', () => {
+  const base = {
+    redirectUris: ['https://claude.ai/api/mcp/auth_callback'],
+    clientName: 'Claude',
+    applicationType: 'web' as const,
+    createdAt: Date.now(),
+  };
+
+  it('gives a DCR registration the long TTL and a CIMD cache the short one', async () => {
+    // One knob used to serve both, and the two fail in opposite directions:
+    // losing a registration costs a re-registration, while KEEPING a cached
+    // document too long rejects a client that rotated its redirect URIs for
+    // exactly that long, with nothing revalidating it.
+    const config = testConfig();
+    const { backend, writes } = recordingBackend();
+    const store = new Store(backend, config);
+
+    await store.putClient({ ...base, clientId: 'c_dcr', source: 'dcr' });
+    await store.putClient({ ...base, clientId: 'https://claude.ai/meta', source: 'cimd' });
+
+    expect(writes.map((w) => w.ttlSeconds)).toEqual([
+      config.AUTH_CLIENT_TTL,
+      config.AUTH_CIMD_CACHE_TTL,
+    ]);
+    expect(config.AUTH_CIMD_CACHE_TTL).toBeLessThan(config.AUTH_CLIENT_TTL);
+  });
+
+  it('reads either kind back unchanged', async () => {
+    const store = newStore();
+    const client = { ...base, clientId: 'c_dcr', source: 'dcr' as const };
+    await store.putClient(client);
+    expect(await store.getClient('c_dcr')).toMatchObject(client);
+    expect(await store.getClient('')).toBeNull();
+  });
+});
 
 describe('grants', () => {
   it('creates and reads back a grant', async () => {

@@ -82,13 +82,26 @@ services:
       AUTH_ACCESS_TOKEN_TTL: ${AUTH_ACCESS_TOKEN_TTL:-3600}
       AUTH_REFRESH_TOKEN_TTL: ${AUTH_REFRESH_TOKEN_TTL:-2592000}
       AUTH_CODE_TTL: ${AUTH_CODE_TTL:-120}
-      AUTH_CLIENT_TTL: ${AUTH_CLIENT_TTL:-31536000}
+      # 90 days, for DCR registrations. Worst case is
+      # RATE_LIMITER_REGISTER_MAX x this TTL against a 256mb noeviction store;
+      # raise REDIS_MAXMEMORY too if you raise this.
+      AUTH_CLIENT_TTL: ${AUTH_CLIENT_TTL:-7776000}
+      # Separate knob: a CIMD record is a cache of a document the CLIENT owns.
+      # Nothing revalidates it, so a rotated redirect URI is rejected for
+      # exactly this long. Hours, not months.
+      AUTH_CIMD_CACHE_TTL: ${AUTH_CIMD_CACHE_TTL:-3600}
       # Empty = any MCP client may register (see .env.example for why).
       MCP_ALLOWED_CLIENT_REDIRECT_URIS: ${MCP_ALLOWED_CLIENT_REDIRECT_URIS:-}
 
       RATE_LIMITER_ENABLED: ${RATE_LIMITER_ENABLED:-true}
       RATE_LIMITER_LOGIN_MAX: ${RATE_LIMITER_LOGIN_MAX:-10}
       RATE_LIMITER_LOGIN_WINDOW: ${RATE_LIMITER_LOGIN_WINDOW:-900}
+      # /register and CIMD resolution are both unauthenticated; these bound
+      # store growth and outbound fetches respectively (see .env.example).
+      RATE_LIMITER_REGISTER_MAX: ${RATE_LIMITER_REGISTER_MAX:-30}
+      RATE_LIMITER_REGISTER_WINDOW: ${RATE_LIMITER_REGISTER_WINDOW:-3600}
+      RATE_LIMITER_CIMD_MAX: ${RATE_LIMITER_CIMD_MAX:-30}
+      RATE_LIMITER_CIMD_WINDOW: ${RATE_LIMITER_CIMD_WINDOW:-3600}
       RATE_LIMITER_TOKEN_MAX: ${RATE_LIMITER_TOKEN_MAX:-60}
       RATE_LIMITER_TOKEN_WINDOW: ${RATE_LIMITER_TOKEN_WINDOW:-60}
       RATE_LIMITER_MCP_MAX: ${RATE_LIMITER_MCP_MAX:-600}

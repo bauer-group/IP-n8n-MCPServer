@@ -565,6 +565,78 @@ describe('revocation', () => {
 });
 
 describe('hardening', () => {
+  it('rate-limits client registration per IP', async () => {
+    // /register is unauthenticated by design, and every accepted call writes a
+    // record that lives for AUTH_CLIENT_TTL. Without a bound, one caller
+    // decides how much of the store they occupy and for how long.
+    const limited = createHarness({
+      RATE_LIMITER_REGISTER_MAX: '2',
+      RATE_LIMITER_REGISTER_WINDOW: '60',
+    });
+    const attempt = (n: number) =>
+      limited.fetch('/register', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.10' },
+        body: JSON.stringify({ redirect_uris: [`https://claude.ai/cb${n}`] }),
+      });
+    const statuses: number[] = [];
+    for (let i = 0; i < 4; i += 1) statuses.push((await attempt(i)).status);
+    expect(statuses).toEqual([201, 201, 429, 429]);
+  });
+
+  it('rate-limits Client ID Metadata Document fetches per IP', async () => {
+    // Resolving a CIMD client id is the one unauthenticated path on which this
+    // gateway fetches a URL the caller named. Unbounded, /authorize is a
+    // request amplifier anyone can point at anyone.
+    const limited = createHarness({ RATE_LIMITER_CIMD_MAX: '2', RATE_LIMITER_CIMD_WINDOW: '60' });
+    const before = fetchStub.calls.length;
+    const statuses: number[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      const clientId = encodeURIComponent(`https://attacker.example/doc${i}.json`);
+      const response = await limited.fetch(`/authorize?response_type=code&client_id=${clientId}`, {
+        headers: { 'x-forwarded-for': '203.0.113.20' },
+      });
+      statuses.push(response.status);
+    }
+    // The first two were resolved (and rejected as not-a-document); the rest
+    // never reached the network at all.
+    const reached = fetchStub.calls
+      .slice(before)
+      .filter((call) => call.url.includes('attacker.example'));
+    expect(reached).toHaveLength(2);
+    expect(statuses).toEqual([400, 400, 429, 429]);
+  });
+
+  it('does not spend the CIMD budget on an already-cached client', async () => {
+    // Where MCP is heading, every client identifies by document. If a cache hit
+    // cost budget, a deployment would spend it on its own legitimate traffic
+    // and start turning users away — while an attacker, always a cache miss,
+    // pays every time.
+    const limited = createHarness({ RATE_LIMITER_CIMD_MAX: '1', RATE_LIMITER_CIMD_WINDOW: '60' });
+    const clientId = 'https://claude.ai/oauth/claude-code-client-metadata';
+    await limited.store.putClient({
+      clientId,
+      redirectUris: [REDIRECT],
+      clientName: 'Claude Code',
+      source: 'cimd',
+      applicationType: 'native',
+      createdAt: Date.now(),
+    });
+
+    const before = fetchStub.calls.length;
+    const { challenge } = await pkcePair();
+    for (let i = 0; i < 5; i += 1) {
+      const response = await limited.fetch(
+        `/authorize?response_type=code&client_id=${encodeURIComponent(clientId)}` +
+          `&redirect_uri=${encodeURIComponent(REDIRECT)}&code_challenge=${challenge}` +
+          `&code_challenge_method=S256&resource=${encodeURIComponent(RESOURCE)}`,
+        { headers: { 'x-forwarded-for': '203.0.113.21' } },
+      );
+      expect(response.status).toBe(200);
+    }
+    expect(fetchStub.calls.slice(before)).toHaveLength(0);
+  });
+
   it('rate-limits the token endpoint per client IP', async () => {
     const limited = createHarness({ RATE_LIMITER_TOKEN_MAX: '3', RATE_LIMITER_TOKEN_WINDOW: '60' });
     const attempt = () =>

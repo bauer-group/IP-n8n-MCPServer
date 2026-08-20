@@ -18,11 +18,10 @@
  * not care which was used.
  */
 
-import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import type { Config } from '../config.js';
 import { log, short } from '../logger.js';
-import { isPublicAddress } from '../n8n/tenant.js';
+import { hostResolvesPublic, isPublicAddress } from '../n8n/tenant.js';
 import type { ClientSource, OAuthClient, Store } from '../store/index.js';
 
 /** Cap on a fetched Client ID Metadata Document. Real ones are well under 4 KB. */
@@ -33,6 +32,35 @@ const CIMD_TIMEOUT_MS = 4_000;
 // ─── Redirect URI rules ──────────────────────────────────────────────────────
 
 /**
+ * Schemes that may never be a redirect target, whatever else is true of them.
+ *
+ * The rule below deliberately accepts *unrecognised* schemes, because that is
+ * what an RFC 8252 §7.1 private-use redirect looks like and there is no registry
+ * to check one against: `cursor:`, `vscode:` and `com.example.app:` are all
+ * legitimate and share no syntax. Requiring the reverse-DNS form the RFC
+ * recommends would reject the editor schemes that are actually in use.
+ *
+ * That openness is right for schemes naming an *application* and wrong for the
+ * handful naming a *capability*. A registered `javascript:` or `data:` redirect
+ * reaches two places that matter: the consent page's `form-action` directive,
+ * and a `Location` header carrying an authorization code. No current browser
+ * will navigate to either from a redirect — so this closes a hole that is not
+ * open today rather than one that is. It is here because "the browsers we
+ * tested decline to execute it" is not a property to rest an authorization
+ * server on, and an embedded webview is under no obligation to agree.
+ */
+const FORBIDDEN_REDIRECT_SCHEMES: ReadonlySet<string> = new Set([
+  'javascript:',
+  'data:',
+  'vbscript:',
+  'blob:',
+  'file:',
+  'about:',
+  'filesystem:',
+  'view-source:',
+]);
+
+/**
  * Is this a syntactically acceptable redirect URI to register?
  *
  * Accepted:
@@ -40,9 +68,10 @@ const CIMD_TIMEOUT_MS = 4_000;
  *   - `http://` on a loopback host, for RFC 8252 native clients such as Claude Code
  *   - a private-use scheme (`com.example.app:/cb`, `cursor://…`), also RFC 8252
  *
- * Rejected outright: plain `http://` to a non-loopback host, and any URI with a
+ * Rejected outright: plain `http://` to a non-loopback host, any URI with a
  * fragment (RFC 6749 §3.1.2 — the fragment is where the browser would put the
- * response, so a registered one cannot be honoured).
+ * response, so a registered one cannot be honoured), and the capability schemes
+ * above.
  */
 export function isAcceptableRedirectUri(raw: string): boolean {
   let url: URL;
@@ -52,6 +81,11 @@ export function isAcceptableRedirectUri(raw: string): boolean {
     return false;
   }
   if (url.hash) return false;
+
+  // The URL parser lowercases the scheme, so `JavaScript:` arrives here as
+  // `javascript:`. Lowercased again anyway: this set is a security control and
+  // should not depend on a normalisation performed elsewhere.
+  if (FORBIDDEN_REDIRECT_SCHEMES.has(url.protocol.toLowerCase())) return false;
 
   if (url.protocol === 'https:') return true;
   if (url.protocol === 'http:') return isLoopbackHost(url.hostname);
@@ -327,9 +361,11 @@ export async function resolveCimdClient(
     createdAt: Date.now(),
   };
 
-  // Cached under the normal client TTL so the next authorize does not refetch.
-  // A client that changes its document takes effect at the next expiry, which
-  // is the trade the spec's own caching guidance accepts.
+  // Cached so the next authorize does not refetch. `putClient` gives this the
+  // short AUTH_CIMD_CACHE_TTL rather than the registration lifetime, keyed off
+  // `source` — a document the client controls must not be pinned for months,
+  // because nothing revalidates it and a rotated redirect URI would be rejected
+  // until it expired.
   await store.putClient(client);
   log().info({
     evt: 'client_registered',
@@ -356,14 +392,22 @@ export async function findClient(
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
+/**
+ * Address-space guard for the CIMD fetch, sharing the tenant path's resolver.
+ *
+ * This used to be its own `lookup()` with no deadline and no cache, which made
+ * an unauthenticated `/authorize` worth one uncached resolver query to a host
+ * the caller names. `dns.lookup` is getaddrinfo on a libuv thread and takes no
+ * signal, so a name whose authoritative server simply never answers occupies a
+ * slot in a pool that is four deep by default.
+ *
+ * `hostResolvesPublic` is three-valued; here `null` (unresolvable) and `false`
+ * (resolved, not public) collapse to the same refusal. On the tenant path they
+ * must not — an operator needs to tell an outage from a misconfiguration — but
+ * a client document we cannot reach is simply a client we cannot identify.
+ */
 async function hostIsPublic(hostname: string): Promise<boolean> {
-  if (isIP(hostname)) return isPublicAddress(hostname);
-  try {
-    const records = await lookup(hostname, { all: true, verbatim: true });
-    return records.length > 0 && records.every((r) => isPublicAddress(r.address));
-  } catch {
-    return false;
-  }
+  return (await hostResolvesPublic(hostname)) === true;
 }
 
 async function readBounded(response: Response, limit: number): Promise<string | null> {

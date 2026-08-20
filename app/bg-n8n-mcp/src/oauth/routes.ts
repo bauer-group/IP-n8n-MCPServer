@@ -41,10 +41,16 @@ import { log, short } from '../logger.js';
 import { validateCredential } from '../n8n/credential.js';
 import { probeApiKey } from '../n8n/probe.js';
 import { checkTenant } from '../n8n/tenant.js';
-import type { Grant, Store } from '../store/index.js';
+import type { Grant, OAuthClient, Store } from '../store/index.js';
 import { errorText, pickLocale } from '../ui/i18n.js';
 import { consentPage, errorPage } from '../ui/pages.js';
-import { findClient, matchesRedirectUri, registerClient } from './clients.js';
+import {
+  findClient,
+  looksLikeCimd,
+  matchesRedirectUri,
+  registerClient,
+  resolveCimdClient,
+} from './clients.js';
 import {
   authorizationServerMetadata,
   OFFLINE_SCOPE,
@@ -62,7 +68,13 @@ export interface OAuthDeps {
  * Rate-limit buckets. Named rather than ad-hoc strings so the set is visible in
  * one place and cannot drift between the check and the increment.
  */
-const BUCKET = { login: 'login', token: 'token', submit: 'submit' } as const;
+const BUCKET = {
+  login: 'login',
+  token: 'token',
+  submit: 'submit',
+  register: 'register',
+  cimd: 'cimd',
+} as const;
 
 /**
  * Consent submissions one IP may make per login window, as a multiple of
@@ -122,6 +134,32 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono<AppEnv> {
   // ───────────────────────────────────────────────────────────────────────────
 
   app.post('/register', async (c) => {
+    // Bounded before the body is even read. Registration is unauthenticated —
+    // that is the MCP default and what lets an unknown client connect — so the
+    // only thing standing between one caller and an arbitrary number of
+    // AUTH_CLIENT_TTL-lived records is this counter.
+    //
+    // Counted on every attempt rather than only on success, deliberately: a
+    // caller looping malformed bodies costs the same JSON parse and store round
+    // trip as one looping valid ones, and "it was rejected" is not a reason to
+    // let it be free.
+    if (config.RATE_LIMITER_ENABLED) {
+      const ip = clientIp(c, config.RATE_LIMITER_TRUSTED_PROXY_HOPS);
+      const used = await store.countAttempt(
+        BUCKET.register,
+        ip,
+        config.RATE_LIMITER_REGISTER_WINDOW,
+      );
+      if (used > config.RATE_LIMITER_REGISTER_MAX) {
+        log().warn({ evt: 'register_rate_limited', ip, attempts: used });
+        c.header('Retry-After', String(config.RATE_LIMITER_REGISTER_WINDOW));
+        return c.json(
+          { error: 'invalid_request', error_description: 'too many registrations' },
+          429,
+        );
+      }
+    }
+
     const body = await c.req.json().catch(() => ({}));
     const result = await registerClient(config, store, body as Record<string, unknown>);
     if (!result.ok) {
@@ -195,14 +233,58 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono<AppEnv> {
     return c.redirect(url.toString(), 302);
   };
 
+  /**
+   * Resolve the client named on `GET /authorize`, with the CIMD fetch bounded.
+   *
+   * `findClient` tries the store and then, for an https client id, fetches the
+   * Client ID Metadata Document that id points at. That second half is the only
+   * place an **unauthenticated** request makes this gateway resolve and connect
+   * to a host the caller chose, so it is the half that needs a budget.
+   *
+   * The store lookup is done here rather than left to `findClient` for one
+   * reason: it is what lets the budget apply to *uncached* resolutions only. A
+   * deployment where every client uses CIMD — which is where MCP is heading —
+   * would otherwise spend the budget on its own legitimate traffic and start
+   * turning users away. An attacker naming a fresh URL every time is always a
+   * cache miss and always pays.
+   *
+   * Returns the literal `'rate_limited'` rather than null so the caller can tell
+   * "no such client" from "ask again later"; answering the first for the second
+   * would send a user to check a client id that was never the problem.
+   */
+  const resolveAuthorizeClient = async (
+    c: Context,
+    clientId: string,
+  ): Promise<OAuthClient | null | 'rate_limited'> => {
+    const stored = await store.getClient(clientId);
+    if (stored) return stored;
+    if (!looksLikeCimd(clientId)) return null;
+
+    if (config.RATE_LIMITER_ENABLED) {
+      const ip = clientIp(c, config.RATE_LIMITER_TRUSTED_PROXY_HOPS);
+      const used = await store.countAttempt(BUCKET.cimd, ip, config.RATE_LIMITER_CIMD_WINDOW);
+      if (used > config.RATE_LIMITER_CIMD_MAX) {
+        log().warn({ evt: 'cimd_rate_limited', ip, attempts: used });
+        return 'rate_limited';
+      }
+    }
+
+    return await resolveCimdClient(config, store, clientId);
+  };
+
   app.get('/authorize', async (c) => {
     const locale = locales(c);
     const q = c.req.query();
-    const fail = (code: string) =>
-      c.html(errorPage(locale, config.MCP_DISPLAY_NAME, errorText(locale, code)), 400);
+    const fail = (code: string, status: 400 | 429 = 400) =>
+      c.html(errorPage(locale, config.MCP_DISPLAY_NAME, errorText(locale, code)), status);
 
     const clientId = q['client_id'] ?? '';
-    const client = clientId ? await findClient(config, store, clientId) : null;
+    const resolved = clientId ? await resolveAuthorizeClient(c, clientId) : null;
+    if (resolved === 'rate_limited') {
+      c.header('Retry-After', String(config.RATE_LIMITER_CIMD_WINDOW));
+      return fail('rate_limited_request', 429);
+    }
+    const client = resolved;
     if (!client) {
       log().warn({ evt: 'authorize_unknown_client', client_id: short(clientId, 40) });
       return fail('unknown_client');

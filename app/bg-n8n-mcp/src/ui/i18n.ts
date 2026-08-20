@@ -129,6 +129,8 @@ const de: Strings = {
     empty: 'Bitte einen API-Key eingeben.',
     no_username: 'Bitte einen Benutzernamen oder eine E-Mail-Adresse eingeben.',
     rate_limited_login: 'Zu viele Fehlversuche. Bitte in 15 Minuten erneut versuchen.',
+    rate_limited_request:
+      'Zu viele Anfragen von dieser Adresse. Bitte in einigen Minuten erneut versuchen.',
     unknown_instance: 'Diese n8n-Instanz ist auf diesem Gateway nicht freigegeben.',
     invalid_request: 'Die Anfrage war unvollständig oder ungültig.',
     unknown_client: 'Der anfragende Client ist nicht registriert.',
@@ -195,6 +197,7 @@ const en: Strings = {
     empty: 'Please enter an API key.',
     no_username: 'Please enter a username or e-mail address.',
     rate_limited_login: 'Too many failed attempts. Please try again in 15 minutes.',
+    rate_limited_request: 'Too many requests from this address. Please try again in a few minutes.',
     unknown_instance: 'This n8n instance is not enabled on this gateway.',
     invalid_request: 'The request was incomplete or invalid.',
     unknown_client: 'The requesting client is not registered.',

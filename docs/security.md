@@ -147,7 +147,75 @@ everyone who uses it. A 403 does not count either: the key is real and the
 account simply lacks a permission, so counting it sends that user round a loop
 that cannot succeed.
 
-### 9 · Client IP
+### 9 · Unauthenticated endpoints are metered
+
+Three endpoints answer before anyone has proved anything, and each one costs
+this server something an attacker would like to spend on its behalf:
+
+| Endpoint | What one call costs | Bound |
+| --- | --- | --- |
+| `POST /register` | one store record, living `AUTH_CLIENT_TTL` (90 days) | `RATE_LIMITER_REGISTER_MAX`, 30/h per IP |
+| `GET /authorize` with a CIMD client id | one resolver query + one outbound HTTPS fetch | `RATE_LIMITER_CIMD_MAX`, 30/h per IP |
+| `POST /authorize` | one probe against an n8n instance | the login lockout, plus the volume gate |
+
+Registration is unauthenticated by design — that is what lets a client we have
+never heard of connect — so the rate bound and the record TTL are **one**
+decision, not two. The product of the two is the worst case one address can
+occupy, in ~334-byte records:
+
+```text
+ 90d × 30/h  →  ~21 MB          365d × 30/h  →  ~84 MB
+690d × 30/h  →  ~158 MB
+```
+
+The deployed store runs `maxmemory 256mb` with `maxmemory-policy noeviction`,
+chosen so that a full store is an alert rather than users being silently evicted
+mid-session. The consequence is that "full" means no further grant or token can
+be written at all — so the TTL is not a free parameter, and raising it means
+raising `REDIS_MAXMEMORY` with it.
+
+An expired client record cannot break a live connector: it is read on
+`/authorize` alone, never by the token exchange, the refresh, or the proxy. The
+floor is simply the refresh lifetime — a user has to be inactive longer than
+that before the record is consulted at all.
+
+The CIMD budget counts **uncached** resolutions only. Where MCP is heading every
+client identifies by document, so charging cache hits would spend the budget on
+the deployment's own legitimate traffic and start refusing real users — while an
+attacker, always a cache miss, pays every time.
+
+`AUTH_CIMD_CACHE_TTL` is a separate setting from `AUTH_CLIENT_TTL`, and the
+split is not tidiness. A DCR record *is* the registration; a CIMD record is a
+copy of a document the client publishes and controls. Losing the first costs a
+re-registration, losing the second costs one refetch — and **keeping** the
+second is the expensive direction, because nothing revalidates it: a stored
+record wins every lookup, so a client that rotates its redirect URIs is rejected
+with `invalid_redirect` for exactly that long, with no cure but flushing the
+store. One knob could not serve both; an hour serves the cache.
+
+Both DNS lookups on that path share the tenant resolver's deadline and cache.
+`dns.lookup` is getaddrinfo on a libuv thread and takes no signal, so a name
+whose authoritative server never answers occupies a slot in a pool that is four
+deep by default; an unbounded, uncached lookup reachable without authentication
+is a denial-of-service primitive regardless of what the fetch after it does.
+
+### 10 · Redirect URI schemes
+
+`https`, loopback `http` (RFC 8252 §7.3, port-agnostic), and private-use schemes
+— `cursor:`, `vscode:`, `com.example.app:` — are accepted. Unrecognised schemes
+are accepted deliberately: that is what a private-use redirect looks like, and
+there is no registry to check one against.
+
+Schemes naming a **capability** rather than an application are refused outright:
+`javascript:`, `data:`, `vbscript:`, `blob:`, `file:`, `about:`, `filesystem:`,
+`view-source:`. A registered one of those would reach the consent page's
+`form-action` directive and a `Location` header carrying an authorization code.
+No current browser navigates to either from a redirect, so this closes something
+that is not open — it is here because "the browsers we tested decline to execute
+it" is not a property to rest an authorization server on, and an embedded webview
+is under no obligation to agree.
+
+### 11 · Client IP
 
 Taken from the **rightmost** `RATE_LIMITER_TRUSTED_PROXY_HOPS` entries of
 `X-Forwarded-For`. The header is append-only and its left end is whatever the
@@ -155,7 +223,7 @@ caller wrote. Taking the leftmost entry — the common shortcut — hands every 
 limit here to anyone willing to set a header. With `hops = 0` the header is
 ignored entirely.
 
-### 10 · The consent screen
+### 12 · The consent screen
 
 Served under `default-src 'none'; script-src 'none'; form-action 'self';
 frame-ancestors 'none'`, `Cache-Control: no-store`. **No inline script can run
@@ -222,7 +290,9 @@ Documented rather than hidden, so you can decide whether they matter to you.
   the live probe is what actually authenticates.
 
 - **Registration is unauthenticated by default**, which is the MCP default and
-  is what lets a client we have never heard of connect. Narrow it with
+  is what lets a client we have never heard of connect. It is rate-bounded
+  (guard 9) but not authenticated: anyone may still obtain a `client_id` and
+  start an authorization request against this gateway. Narrow it with
   `MCP_ALLOWED_CLIENT_REDIRECT_URIS` on a deployment that only serves Claude —
   noting that this also excludes Claude Code.
 
