@@ -1,3 +1,9 @@
+## [0.4.1](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.4.0...v0.4.1) (2026-08-21)
+
+### 🐛 Bug Fixes
+
+* **mcp:** repaired intermittent connector failures ([7985952](https://github.com/bauer-group/IP-n8n-MCPServer/commit/79859528f83a0337356e966fcf6ca11fa43f8808))
+
 ## [0.4.0](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.3.4...v0.4.0) (2026-08-20)
 
 ### 🚀 Features

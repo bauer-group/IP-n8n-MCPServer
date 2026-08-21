@@ -119,7 +119,7 @@ LABEL org.opencontainers.image.documentation="https://github.com/bauer-group/IP-
 LABEL org.opencontainers.image.description="bg-n8n-mcp — OAuth 2.1 MCP server for n8n, fronting n8n-mcp as a remote connector with per-user n8n API keys (BAUER GROUP)"
 LABEL com.bauer-group.image.component="mcp-server"
 LABEL com.bauer-group.image.stack="n8n"
-LABEL org.opencontainers.image.version="0.4.0"
+LABEL org.opencontainers.image.version="0.4.1"
 
 RUN apk add --no-cache tini tzdata ca-certificates curl \
  && rm -rf /var/cache/apk/* \
