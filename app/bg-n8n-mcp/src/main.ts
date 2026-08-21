@@ -73,6 +73,25 @@ async function main(): Promise<void> {
       ),
     port: config.MCP_PORT,
     hostname: config.MCP_HOST,
+
+    // Node's defaults are written for request/response traffic, and one of them
+    // is wrong for a gateway that holds SSE streams open. `keepAliveTimeout`
+    // defaults to 5s, while Traefik's Go transport pools idle upstream
+    // connections for ~90s and does not parse the `Keep-Alive: timeout=5` hint
+    // Node advertises. A request dispatched into the sub-millisecond gap
+    // between Node's FIN and Go evicting the connection becomes a
+    // `nothingWrittenError`, and Go only retries replayable requests — a
+    // streamed `POST /i/<host>/mcp` body has no `GetBody`, so it surfaces as a
+    // 502 the gateway never even sees.
+    //
+    // Only `keepAliveTimeout` is set. `headersTimeout` and `requestTimeout`
+    // bound *receiving* a request and are cleared once it is in, so neither can
+    // affect a long-lived response — and Node's only constraint between them is
+    // `headersTimeout <= requestTimeout`, nothing to do with keep-alive. Setting
+    // them here would have been cargo.
+    serverOptions: {
+      keepAliveTimeout: 120_000,
+    },
   });
 
   log().info({

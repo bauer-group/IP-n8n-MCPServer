@@ -474,7 +474,7 @@ describe('refresh', () => {
       body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: token }),
     });
 
-  it('rotates the refresh token and invalidates the old one', async () => {
+  it('rotates the refresh token and answers a racing replay with the same pair', async () => {
     // OAuth 2.1 requires rotation for public clients; taking the old token is
     // what makes the rotation real rather than nominal.
     const issued = await tokens();
@@ -482,17 +482,117 @@ describe('refresh', () => {
     expect(response.status).toBe(200);
     const next = (await response.json()) as Record<string, string>;
     expect(next['refresh_token']).not.toBe(issued['refresh_token']);
+
+    // Rotation is atomic, so of two concurrent presentations exactly one wins.
+    // Answering the loser `invalid_grant` tells it, per RFC 6749 §5.2, to throw
+    // away a grant that is perfectly alive — the user is then disconnected by a
+    // race rather than by a fault, and only a full re-consent brings them back.
+    //
+    // Inside the grace window the loser gets the winner's pair instead.
+    // Asserting it is IDENTICAL is the point: rotation still issued exactly one
+    // new pair, so this is leeway, not a second door.
+    const replay = await refreshWith(issued['refresh_token'] as string);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual(next);
+  });
+
+  it('answers two refreshes fired at once with one identical pair', async () => {
+    // The case the grace window exists for, and the one a sequential replay
+    // test cannot reach. The winner does real work between consuming the token
+    // and being able to answer — an outbound probe against the user's own n8n,
+    // up to five seconds — so if the grace record is written after that probe,
+    // the loser looks microseconds later, finds nothing, and gets
+    // `invalid_grant`: per RFC 6749 §5.2 an instruction to discard a live
+    // grant. That is the reported symptom, manufactured by the fix meant to
+    // prevent it.
+    const issued = await tokens();
+
+    // A probe slow enough that the two requests genuinely overlap.
+    fetchStub.restore();
+    fetchStub = stubFetch(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return n8nWorkflowsOk();
+    });
+
+    const token = issued['refresh_token'] as string;
+    const [first, second] = await Promise.all([refreshWith(token), refreshWith(token)]);
+
+    expect([first.status, second.status]).toEqual([200, 200]);
+    // Exactly one pair was minted, and both callers were told about that one.
+    const [a, b] = await Promise.all([first.json(), second.json()]);
+    expect(a).toEqual(b);
+    expect((a as Record<string, string>)['refresh_token']).not.toBe(token);
+  });
+
+  it('does not hand out a replayed pair once the grant is revoked', async () => {
+    // The pair in the grace record dies with the grant it points at. Serving it
+    // would answer 200 with two dead tokens, which reads to the client as a
+    // healthy connector that then fails on its very next call.
+    const issued = await tokens();
+    const refreshed = await refreshWith(issued['refresh_token'] as string);
+    expect(refreshed.status).toBe(200);
+
+    // Revoked through the real RFC 7009 endpoint, so the test exercises the
+    // path an operator or client actually uses.
+    const fresh = (await refreshed.json()) as Record<string, string>;
+    const revoked = await harness.fetch('/revoke', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ token: fresh['access_token'] as string }),
+    });
+    expect(revoked.status).toBe(200);
+
+    const replay = await refreshWith(issued['refresh_token'] as string);
+    expect(replay.status).toBe(400);
+    expect(((await replay.json()) as { error: string }).error).toBe('invalid_grant');
+  });
+
+  it('refuses a replayed refresh token when the grace window is switched off', async () => {
+    harness = createHarness({ AUTH_REFRESH_ROTATION_GRACE: '0' });
+    const issued = await tokens();
+    expect((await refreshWith(issued['refresh_token'] as string)).status).toBe(200);
     expect((await refreshWith(issued['refresh_token'] as string)).status).toBe(400);
   });
 
-  it('revokes the grant when n8n now rejects the stored key', async () => {
+  it('refuses a refresh token that was never issued', async () => {
+    // The grace lookup must not turn every unknown string into a 200.
+    const response = await refreshWith('not-a-token-we-ever-minted');
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe('invalid_grant');
+  });
+
+  it('rides out a single bad_key verdict rather than deleting the grant', async () => {
+    // The refresh path probes the user's own n8n, unattended, every hour. A
+    // challenge-less 401 is what a Cloudflare block page, an n8n mid-restart
+    // and a licence-check window all return, and acting on one sample deleted
+    // the grant — killing every token pointing at it. The reconnect the user
+    // then attempted ran the SAME probe and blamed their key, so they would
+    // mint a new n8n key and watch it fail identically.
     const issued = await tokens();
     fetchStub.restore();
     fetchStub = stubFetch(async () => new Response('', { status: 401 }));
 
     const response = await refreshWith(issued['refresh_token'] as string);
-    expect(response.status).toBe(400);
-    expect(((await response.json()) as { error: string }).error).toBe('invalid_grant');
+    expect(response.status).toBe(200);
+  });
+
+  it('revokes the grant after three consecutive bad_key verdicts', async () => {
+    const issued = await tokens();
+    fetchStub.restore();
+    fetchStub = stubFetch(async () => new Response('', { status: 401 }));
+
+    // Chained deliberately: each refresh rotates, so the next strike has to be
+    // presented with the token the previous one issued.
+    let token = issued['refresh_token'] as string;
+    for (let strike = 1; strike <= 2; strike += 1) {
+      const survived = await refreshWith(token);
+      expect(survived.status).toBe(200);
+      token = ((await survived.json()) as Record<string, string>)['refresh_token'] as string;
+    }
+
+    const dead = await refreshWith(token);
+    expect(dead.status).toBe(400);
+    expect(((await dead.json()) as { error: string }).error).toBe('invalid_grant');
 
     // The whole grant is gone, so the previously issued access token dies too.
     const mcp = await harness.fetch(`/i/${TENANT}/mcp`, {
@@ -501,6 +601,49 @@ describe('refresh', () => {
       body: '{}',
     });
     expect(mcp.status).toBe(401);
+  });
+
+  it('clears the strikes as soon as the key works again', async () => {
+    // Strikes only mean something consecutively. Without this, three unrelated
+    // outages spread over a window would add up to a revocation.
+    const issued = await tokens();
+    fetchStub.restore();
+    fetchStub = stubFetch(async () => new Response('', { status: 401 }));
+
+    const struck = await refreshWith(issued['refresh_token'] as string);
+    expect(struck.status).toBe(200);
+    let token = ((await struck.json()) as Record<string, string>)['refresh_token'] as string;
+
+    // n8n recovers, and the counter goes with it.
+    fetchStub.restore();
+    fetchStub = stubFetch(async () => Response.json({ data: [] }));
+    const healthy = await refreshWith(token);
+    expect(healthy.status).toBe(200);
+    token = ((await healthy.json()) as Record<string, string>)['refresh_token'] as string;
+
+    // Two fresh strikes must therefore still not be enough.
+    fetchStub.restore();
+    fetchStub = stubFetch(async () => new Response('', { status: 401 }));
+    for (let strike = 1; strike <= 2; strike += 1) {
+      const survived = await refreshWith(token);
+      expect(survived.status).toBe(200);
+      token = ((await survived.json()) as Record<string, string>)['refresh_token'] as string;
+    }
+  });
+
+  it('never revokes on a role change, however often it recurs', async () => {
+    // 403 says the key is real and the account lost a permission. That is an
+    // operator's doing, and logging the user out does not restore it.
+    const issued = await tokens();
+    fetchStub.restore();
+    fetchStub = stubFetch(async () => new Response('', { status: 403 }));
+
+    let token = issued['refresh_token'] as string;
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      const response = await refreshWith(token);
+      expect(response.status).toBe(200);
+      token = ((await response.json()) as Record<string, string>)['refresh_token'] as string;
+    }
   });
 
   it('does NOT revoke when the instance is merely unreachable', async () => {

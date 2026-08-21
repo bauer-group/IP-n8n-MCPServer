@@ -11,7 +11,7 @@
 
 import { createClient, type RedisClientType } from 'redis';
 import { log } from '../logger.js';
-import type { StoreBackend } from './backend.js';
+import type { StoreBackend, WindowKind } from './backend.js';
 
 /**
  * The subset of the node-redis client this backend uses.
@@ -21,20 +21,28 @@ import type { StoreBackend } from './backend.js';
  * option shape and the `multi().exec()` reply shape across majors, and those
  * are exactly the details a type-only dependency would let drift silently.
  */
+export interface RedisSetOptions {
+  expiration: { type: 'EX'; value: number };
+  /** `NX` = only if the key does not already exist. */
+  condition?: 'NX';
+}
+
+/** The chainable MULTI surface, declared as chainable so either order works. */
+export interface RedisMultiLike {
+  set(key: string, value: string, options: RedisSetOptions): RedisMultiLike;
+  incr(key: string): RedisMultiLike;
+  expire(key: string, seconds: number): RedisMultiLike;
+  exec(): Promise<unknown[]>;
+}
+
 export interface RedisLike {
   get(key: string): Promise<string | null>;
-  set(
-    key: string,
-    value: string,
-    options: { expiration: { type: 'EX'; value: number } },
-  ): Promise<unknown>;
+  set(key: string, value: string, options: RedisSetOptions): Promise<unknown>;
   getDel(key: string): Promise<string | null>;
   del(key: string): Promise<unknown>;
   ping(): Promise<string>;
   close(): Promise<void>;
-  multi(): {
-    incr(key: string): { expire(key: string, seconds: number): { exec(): Promise<unknown[]> } };
-  };
+  multi(): RedisMultiLike;
 }
 
 export class RedisBackend implements StoreBackend {
@@ -91,13 +99,36 @@ export class RedisBackend implements StoreBackend {
     return await this.#client.getDel(key);
   }
 
-  async incr(key: string, ttlSeconds: number): Promise<number> {
-    // INCR then EXPIRE in one transaction. Setting the TTL unconditionally
-    // makes this a sliding window: each new attempt extends the lockout, which
-    // is the behaviour you want from a brute-force counter.
-    const replies = await this.#client.multi().incr(key).expire(key, ttlSeconds).exec();
-    const count = Number(replies[0]);
-    return Number.isFinite(count) ? count : 0;
+  async incr(key: string, ttlSeconds: number, window: WindowKind): Promise<number> {
+    const toCount = (reply: unknown): number => {
+      const count = Number(reply);
+      return Number.isFinite(count) ? count : 0;
+    };
+
+    if (window === 'sliding') {
+      // INCR then EXPIRE in one transaction. Re-arming the TTL on every
+      // increment is what makes the window slide — each new attempt extends
+      // the lockout, which is what a brute-force counter wants.
+      const replies = await this.#client.multi().incr(key).expire(key, ttlSeconds).exec();
+      return toCount(replies[0]);
+    }
+
+    // Fixed window: create the counter carrying its TTL, but only if it is not
+    // already there, then increment. The TTL is therefore anchored to the
+    // window's first request and never moves.
+    //
+    // `SET … EX … NX` + `INCR` rather than the shorter `EXPIRE … NX`: that mode
+    // needs Redis >= 7.0, and while the compose files pin redis:8, AUTH_REDIS_URL
+    // can point at a managed instance nobody here chose. On an older server
+    // `EXPIRE … NX` errors, the counter is left with no TTL at all, and the
+    // bucket becomes a permanent lockout — a worse failure than the one being
+    // fixed. `SET … NX` has worked since 2.6.12.
+    const replies = await this.#client
+      .multi()
+      .set(key, '0', { expiration: { type: 'EX', value: ttlSeconds }, condition: 'NX' })
+      .incr(key)
+      .exec();
+    return toCount(replies[1]);
   }
 
   async del(key: string): Promise<void> {

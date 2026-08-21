@@ -7,7 +7,7 @@
  * n8n API key again.
  */
 
-import type { StoreBackend } from './backend.js';
+import type { StoreBackend, WindowKind } from './backend.js';
 
 interface Entry {
   value: string;
@@ -62,12 +62,18 @@ export class MemoryBackend implements StoreBackend {
     return Promise.resolve(value);
   }
 
-  incr(key: string, ttlSeconds: number): Promise<number> {
+  incr(key: string, ttlSeconds: number, window: WindowKind): Promise<number> {
+    // `#read` clears an expired entry, so after it a surviving entry is a live
+    // one and its `expiresAt` is the window this counter already belongs to.
     const current = Number(this.#read(key) ?? 0);
+    const existing = this.#entries.get(key);
     const next = current + 1;
     this.#entries.set(key, {
       value: String(next),
-      expiresAt: Date.now() + ttlSeconds * 1000,
+      // A fixed window keeps the deadline the first request set; a sliding one
+      // re-arms it. Mirrors RedisBackend.incr — see WindowKind in backend.ts.
+      expiresAt:
+        window === 'fixed' && existing ? existing.expiresAt : Date.now() + ttlSeconds * 1000,
     });
     return Promise.resolve(next);
   }

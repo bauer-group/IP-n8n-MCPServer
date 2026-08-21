@@ -71,6 +71,10 @@ services:
       AUTH_ACCESS_TOKEN_TTL: ${AUTH_ACCESS_TOKEN_TTL:-3600}
       AUTH_REFRESH_TOKEN_TTL: ${AUTH_REFRESH_TOKEN_TTL:-2592000}
       AUTH_CODE_TTL: ${AUTH_CODE_TTL:-120}
+      # Grace window for a replayed refresh token. Not cosmetic: without it the
+      # loser of a concurrent rotation is told `invalid_grant`, which tells a
+      # client to discard a live grant. 0 for strict rotation.
+      AUTH_REFRESH_ROTATION_GRACE: ${AUTH_REFRESH_ROTATION_GRACE:-30}
       # 90 days, for DCR registrations. Worst case is
       # RATE_LIMITER_REGISTER_MAX x this TTL against a 256mb noeviction store;
       # raise REDIS_MAXMEMORY too if you raise this.
@@ -131,7 +135,9 @@ services:
       # docker-compose.traefik.yml for the advisory this prevents.
 
       MULTI_TENANT_SESSION_STRATEGY: ${MULTI_TENANT_SESSION_STRATEGY:-instance}
-      MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS: ${MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS:-false}
+      # On deliberately — see docker-compose.traefik.yml for why off makes one
+      # user's two windows evict each other in a loop.
+      MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS: ${MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS:-true}
       N8N_MCP_MAX_SESSIONS: ${BACKEND_MAX_SESSIONS:-200}
 
       TRUST_PROXY: "1"

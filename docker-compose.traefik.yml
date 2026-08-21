@@ -82,6 +82,10 @@ services:
       AUTH_ACCESS_TOKEN_TTL: ${AUTH_ACCESS_TOKEN_TTL:-3600}
       AUTH_REFRESH_TOKEN_TTL: ${AUTH_REFRESH_TOKEN_TTL:-2592000}
       AUTH_CODE_TTL: ${AUTH_CODE_TTL:-120}
+      # Grace window for a replayed refresh token. Not cosmetic: without it the
+      # loser of a concurrent rotation is told `invalid_grant`, which tells a
+      # client to discard a live grant. 0 for strict rotation.
+      AUTH_REFRESH_ROTATION_GRACE: ${AUTH_REFRESH_ROTATION_GRACE:-30}
       # 90 days, for DCR registrations. Worst case is
       # RATE_LIMITER_REGISTER_MAX x this TTL against a 256mb noeviction store;
       # raise REDIS_MAXMEMORY too if you raise this.
@@ -192,14 +196,17 @@ services:
       # describes (requests missing the tenant headers silently ran against the
       # operator's own n8n). Fixed upstream in 2.51.2; do not pin below that.
 
-      # Each connected user gets their own session, keyed by the per-grant
-      # x-instance-id the gateway sends. With the default 'instance' strategy
-      # and a per-tenant id instead, one user connecting would evict every
-      # other user of the same n8n instance.
+      # Sessions are keyed by the per-grant x-instance-id the gateway sends,
+      # which isolates each user from every other user of the same n8n instance.
       MULTI_TENANT_SESSION_STRATEGY: ${MULTI_TENANT_SESSION_STRATEGY:-instance}
-      # Off by default: one grant = one session, and a reconnect cleans up the
-      # previous one. Turn on if a single grant needs several live sessions.
-      MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS: ${MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS:-false}
+      # On, and it has to be. One grant is one AUTHORIZATION, not one
+      # connection, and every session it opens carries the same instance id:
+      # several claude.ai conversations, the settings page re-listing tools
+      # during a live chat, two `claude` terminals. Off, upstream evicts them
+      # all whenever one initialises, so a single user's two windows knock each
+      # other offline in a loop — and a reconnect only mints a new grant that
+      # the same sessions immediately share again.
+      MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS: ${MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS:-true}
       N8N_MCP_MAX_SESSIONS: ${BACKEND_MAX_SESSIONS:-200}
 
       # The backend sees every request arriving from the gateway's container IP.

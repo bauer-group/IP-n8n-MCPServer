@@ -87,7 +87,18 @@ const EnvSchema = z.object({
       "must not be n8n-mcp's shipped default token",
     ),
 
-  /** Upstream request timeout. Must exceed n8n-mcp's 15s SSE keep-alive. */
+  /**
+   * How long to wait for the upstream's response **headers**.
+   *
+   * Headers only, and the distinction is not pedantry — it was a live bug. An
+   * abort signal handed to `fetch` stays subscribed for the whole lifetime of
+   * `response.body`, so composing a timeout into it made this an absolute
+   * deadline on the response: the spec's long-lived `GET /mcp` channel was cut
+   * every 120s without exception, and a `POST /mcp` whose SSE-framed answer ran
+   * longer was truncated with neither a JSON-RPC result nor error. Upstream's
+   * 15s keep-alives cannot save a stream from an absolute deadline. See
+   * proxy/mcp.ts, where the timer is now disarmed the moment headers land.
+   */
   N8N_MCP_TIMEOUT_MS: intFromEnv(5_000, 600_000).default(120_000),
 
   // ── Which n8n instances may be addressed ──────────────────────────────────
@@ -138,6 +149,23 @@ const EnvSchema = z.object({
   AUTH_ACCESS_TOKEN_TTL: intFromEnv(60, 86_400).default(3_600),
   AUTH_REFRESH_TOKEN_TTL: intFromEnv(3_600, 31_536_000).default(2_592_000),
   AUTH_CODE_TTL: intFromEnv(30, 600).default(120),
+  /**
+   * How long a just-rotated refresh token may still be replayed, in seconds.
+   *
+   * Rotation is atomic, so of two concurrent presentations of one refresh token
+   * exactly one wins and the loser is told `invalid_grant` — a code that tells
+   * a client to throw away a grant that is in fact alive. A client firing two
+   * refreshes at once, or retrying one whose response it never received,
+   * therefore disconnects itself over a race rather than a fault.
+   *
+   * Inside this window the loser is answered with the pair the winner already
+   * received. Nothing new is minted, so this is leeway rather than a hole in
+   * rotation; RFC 9700 §4.14.2 describes exactly it. 30s covers a client-side
+   * retry after a lost response and stays far below any refresh interval.
+   *
+   * Set to 0 for strict rotation: the second presentation always fails.
+   */
+  AUTH_REFRESH_ROTATION_GRACE: intFromEnv(0, 300).default(30),
   /**
    * How long a **dynamically registered** client record survives without use.
    *
@@ -227,6 +255,12 @@ const EnvSchema = z.object({
   RATE_LIMITER_CIMD_WINDOW: intFromEnv(60, 86_400).default(3_600),
 
   /** Token-endpoint attempts per client IP per window. */
+  /**
+   * Token-endpoint budget, per (client_id, address) pair rather than per
+   * address alone — hosted AI clients reach /token server-to-server from a
+   * shared broker egress, where one address is every user at once. A coarse
+   * address-only backstop sits above it at a large multiple; see oauth/routes.ts.
+   */
   RATE_LIMITER_TOKEN_MAX: intFromEnv(1, 10_000).default(60),
   RATE_LIMITER_TOKEN_WINDOW: intFromEnv(10, 3_600).default(60),
   /** MCP calls per access token per window. 0 disables just this limiter. */

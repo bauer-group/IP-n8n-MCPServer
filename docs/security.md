@@ -111,12 +111,16 @@ The inbound bearer never leaves the gateway. MCP forbids it outright.
 
 ### 6 · Per-grant upstream session id
 
-n8n-mcp's default `MULTI_TENANT_SESSION_STRATEGY=instance` evicts every existing
-session sharing an `x-instance-id` whenever one initialises. Sending the n8n
-hostname there — the obvious choice — would mean **any user connecting kicks
-every other user of that instance off**. The gateway sends a value derived from
-the grant instead, so each user gets their own session and the eviction does the
-useful thing: cleaning up that user's own stale session on reconnect.
+n8n-mcp's `MULTI_TENANT_SESSION_STRATEGY=instance` scopes sessions by
+`x-instance-id`. Sending the n8n hostname there — the obvious choice — would
+mean **any user connecting kicks every other user of that instance off**. The
+gateway sends a value derived from the grant instead, so one user's sessions can
+never disturb another's.
+
+A per-grant id isolates users; it does not identify a connection. One grant is
+one *authorization*, and every session it opens shares it. The deployment
+therefore runs `MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS=true`: with it off,
+upstream's eviction pass would fire between a single user's own sessions.
 
 The value is *derived* from the grant id, not the grant id itself, because that
 is a bearer-equivalent secret and would otherwise end up in the backend's
@@ -129,6 +133,7 @@ session ids and log lines.
 | n8n API key | AES-256-GCM, version-prefixed, prefix authenticated as AAD |
 | Access / refresh tokens | Not stored. The key is a peppered HMAC of the token. |
 | Authorization codes | Same, plus atomic `GETDEL` — single-use by construction |
+| Rotation-grace records | AES-256-GCM. The one record whose *value* is a live token pair, so it carries the same seal as the API key. Lives `AUTH_REFRESH_ROTATION_GRACE` seconds (30 by default). |
 | Rate-limit identities | Hashed; no IP or username sits in the keyspace in the clear |
 
 The encryption and hashing keys are HKDF-derived from one configured secret with
@@ -296,9 +301,20 @@ Documented rather than hidden, so you can decide whether they matter to you.
   `MCP_ALLOWED_CLIENT_REDIRECT_URIS` on a deployment that only serves Claude —
   noting that this also excludes Claude Code.
 
-- **Grants outlive a deleted n8n user until the next refresh.** Bounded by
-  `AUTH_ACCESS_TOKEN_TTL` (1 h by default). Immediate revocation is `POST
-  /revoke` or deleting the grant record.
+- **Grants outlive a deleted n8n key by up to three refreshes.** The refresh
+  path revokes on repeated `bad_key` verdicts, not on the first one, because a
+  single unattended probe is not evidence — a Cloudflare block page, an n8n
+  restart and a licence-check window all answer the same way, and revoking on
+  one of those logged people out of a key that was fine. With the default 1 h
+  access token that is roughly a 3 h tail. Note what the tail does *not* grant:
+  the n8n key is the real authorization, so anything needing it fails
+  immediately; what survives is the key-free part of the n8n-mcp surface.
+  Immediate revocation is `POST /revoke` or deleting the grant record.
+
+- **A role change never revokes.** `insufficient_permissions` says the key is
+  real and the account lost a permission — an operator's decision that logging
+  the user out does not enact. It is logged as `refresh_probe_failed` and left
+  to n8n's own authorization, which is the boundary that actually holds.
 
 ---
 

@@ -41,7 +41,7 @@ import { log, short } from '../logger.js';
 import { validateCredential } from '../n8n/credential.js';
 import { probeApiKey } from '../n8n/probe.js';
 import { checkTenant } from '../n8n/tenant.js';
-import type { Grant, OAuthClient, Store } from '../store/index.js';
+import type { Grant, OAuthClient, RotationRecord, Store } from '../store/index.js';
 import { errorText, pickLocale } from '../ui/i18n.js';
 import { consentPage, errorPage } from '../ui/pages.js';
 import {
@@ -71,10 +71,70 @@ export interface OAuthDeps {
 const BUCKET = {
   login: 'login',
   token: 'token',
+  /** Coarse address-keyed backstop for /token; see the endpoint for why. */
+  tokenIp: 'tokenip',
   submit: 'submit',
   register: 'register',
   cimd: 'cimd',
+  /** Consecutive `bad_key` verdicts against one grant, on the refresh path. */
+  badKey: 'badkey',
 } as const;
+
+/**
+ * How much more /token traffic one address may make than one client.
+ *
+ * The address bucket exists only to bound a caller inventing a fresh
+ * `client_id` per request. It must sit far above what a busy shared egress
+ * legitimately produces, or it re-creates the very collapse the client-keyed
+ * bucket was introduced to fix.
+ */
+const TOKEN_IP_BUDGET_FACTOR = 20;
+
+/**
+ * How long the loser of a rotation race waits for the winner to publish.
+ *
+ * Rotation is decided by one atomic `takeToken`, so the loser learns it lost
+ * *before* the winner has finished writing what it minted. A single miss is
+ * therefore ambiguous — the token may be unknown, or the winner may be two
+ * store round trips from publishing — and answering `invalid_grant` on that
+ * first miss tells a client with a perfectly live grant to throw it away.
+ *
+ * One settle-and-recheck separates the two cases. It is bounded and it happens
+ * only on a miss, so a caller presenting garbage tokens buys 50ms of nothing
+ * rather than a held connection; polling to a deadline would have made an
+ * unknown token into an amplifier. 50ms is roughly ten times the round trips
+ * the winner still owes at that point (two token writes and the grace record).
+ */
+const REFRESH_REPLAY_SETTLE_MS = 50;
+
+/**
+ * How many consecutive `bad_key` verdicts end a grant.
+ *
+ * One is not evidence. The refresh path probes the user's own n8n on every
+ * refresh — hourly, unattended — and a challenge-less 401 or a bare 403 is what
+ * a Cloudflare block page, an n8n mid-restart and a licence-check window all
+ * return. Acting on a single sample deleted the grant, which killed every token
+ * pointing at it, and the reconnect the user then attempted ran the *same*
+ * probe and told them their key was bad. They would mint a new n8n key, watch
+ * it fail identically, and the condition would clear on its own an hour later.
+ *
+ * Three consecutive verdicts across separate refreshes is a key that is
+ * genuinely gone. Failing open in the meantime grants nothing: the n8n key is
+ * the real authorization, so if it truly is dead the proxied calls fail anyway.
+ */
+const BAD_KEY_STRIKES = 3;
+
+/**
+ * How far apart two consecutive strikes may be before the count resets.
+ *
+ * Derived from the access-token lifetime rather than fixed, because the refresh
+ * cadence follows it and `AUTH_ACCESS_TOKEN_TTL` accepts anything up to a day.
+ * A hardcoded window silently disables the guard on any deployment whose tokens
+ * outlive it. The bucket slides (see SLIDING_BUCKETS), so this bounds the gap
+ * between strikes, not the total time to reach three.
+ */
+const badKeyStrikeWindow = (accessTokenTtl: number): number =>
+  Math.max(4 * 3_600, accessTokenTtl * 2);
 
 /**
  * Consent submissions one IP may make per login window, as a multiple of
@@ -88,6 +148,72 @@ const BUCKET = {
  * address — far beyond any human, well below a useful amplifier.
  */
 const SUBMIT_BUDGET_FACTOR = 6;
+
+/**
+ * The pair a concurrent winner published for this token, if there is one.
+ *
+ * Looks once, and on a miss gives the winner one short moment before looking
+ * again — see REFRESH_REPLAY_SETTLE_MS for why a first miss is ambiguous and
+ * why the wait is a single settle rather than a poll to a deadline.
+ */
+async function lookUpReplay(store: Store, presented: string): Promise<RotationRecord | null> {
+  const first = await store.getRotation(presented);
+  if (first) return first;
+  await new Promise((resolve) => setTimeout(resolve, REFRESH_REPLAY_SETTLE_MS));
+  return await store.getRotation(presented);
+}
+
+/**
+ * The two gates a consent submission passes before it costs an outbound probe.
+ *
+ * Order matters and is why they live together: the brute-force gate only
+ * *reads*, the volume gate *counts*. Running the volume gate first would charge
+ * a caller who is already locked out, and under the fixed windows this store
+ * now uses that is wasted work rather than a lockout — but it would still make
+ * the two counters disagree about what happened.
+ *
+ * Returns true when the submission must be refused; the caller decides how to
+ * say so, because only it holds the half-rendered form.
+ */
+async function consentGatesBlock(input: {
+  readonly config: Config;
+  readonly store: Store;
+  readonly ip: string;
+  readonly username: string;
+  readonly hostname: string;
+}): Promise<boolean> {
+  const { config, store, ip, username, hostname } = input;
+  if (!config.RATE_LIMITER_ENABLED) return false;
+
+  // Keyed on the client IP AND the typed username. IP alone punishes everyone
+  // behind one NAT for a single fat-fingered colleague; username alone lets an
+  // attacker spread guesses across names. Either bucket tripping is enough.
+  const [byIp, byUser] = await Promise.all([
+    store.attemptCount(BUCKET.login, ip),
+    username ? store.attemptCount(BUCKET.login, `u:${username}`) : Promise.resolve(0),
+  ]);
+  if (Math.max(byIp, byUser) >= config.RATE_LIMITER_LOGIN_MAX) {
+    log().warn({ evt: 'login_rate_limited', host: hostname, ip });
+    return true;
+  }
+
+  // The lockout above counts only credential VERDICTS, deliberately: an
+  // unreachable instance must never lock out the people who depend on it. The
+  // cost of that is every other outcome going uncounted, and each one still buys
+  // the caller an outbound probe from this gateway. This second bucket bounds
+  // request volume without touching the lockout semantics, and it counts every
+  // submission — including the ones that succeed.
+  //
+  // The ceiling is a generous multiple of the lockout, so it is reached only by
+  // something automated; a human fumbling a paste cannot trip it.
+  const submissions = await store.countAttempt(BUCKET.submit, ip, config.RATE_LIMITER_LOGIN_WINDOW);
+  if (submissions > config.RATE_LIMITER_LOGIN_MAX * SUBMIT_BUDGET_FACTOR) {
+    log().warn({ evt: 'authorize_flooded', host: hostname, ip, submissions });
+    return true;
+  }
+
+  return false;
+}
 
 export function createOAuthRoutes(deps: OAuthDeps): Hono<AppEnv> {
   const { config, store } = deps;
@@ -404,8 +530,23 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono<AppEnv> {
 
     const client = await findClient(config, store, pending.clientId);
     if (!client || !matchesRedirectUri(client.redirectUris, pending.redirectUri)) {
-      // The client's registration changed or expired while the form was open.
-      // The claim above already removed the record; there is nothing to put back.
+      // This exit sits *outside* the try/finally below, so it has to restore the
+      // claim itself — `pending` is right here, so the old comment claiming
+      // there was nothing to put back was simply wrong.
+      //
+      // It matters because the common way to arrive here is not a client that
+      // changed its registration. For a CIMD client `findClient` may refetch the
+      // document, and any timeout, non-2xx, redirect, non-public DNS answer or
+      // oversized body lands on this branch — throwing away a request the user
+      // had just typed their n8n API key into, over a transient network fault.
+      // Restoring it costs nothing and lets them press the button again.
+      await store.restorePendingAuth(requestId, pending);
+      log().warn({
+        evt: 'consent_unknown_client',
+        host: pending.hostname,
+        client_id: short(pending.clientId, 40),
+        reason: client ? 'redirect_uri_mismatch' : 'unresolved',
+      });
       return c.html(
         errorPage(locale, config.MCP_DISPLAY_NAME, errorText(locale, 'unknown_client')),
         400,
@@ -455,47 +596,10 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono<AppEnv> {
         );
       };
 
-      // ── Brute-force gate ─────────────────────────────────────────────────────
-      // Keyed on the client IP AND the typed username. IP alone punishes everyone
-      // behind one NAT for a single fat-fingered colleague; username alone lets
-      // an attacker spread guesses across names. Either bucket tripping is enough.
+      // ── Rate gates ───────────────────────────────────────────────────────────
       const ip = clientIp(c, config.RATE_LIMITER_TRUSTED_PROXY_HOPS);
-      if (config.RATE_LIMITER_ENABLED) {
-        const [byIp, byUser] = await Promise.all([
-          store.attemptCount(BUCKET.login, ip),
-          username ? store.attemptCount(BUCKET.login, `u:${username}`) : Promise.resolve(0),
-        ]);
-        if (Math.max(byIp, byUser) >= config.RATE_LIMITER_LOGIN_MAX) {
-          log().warn({ evt: 'login_rate_limited', host: pending.hostname, ip });
-          return await retry('rate_limited_login', 429);
-        }
-      }
-
-      // ── Volume gate ──────────────────────────────────────────────────────────
-      // The lockout above counts only credential VERDICTS, deliberately: an
-      // unreachable instance must never lock out the people who depend on it.
-      // The cost of that is every other outcome going uncounted, and each one
-      // still buys the caller an outbound probe from this gateway. This second
-      // bucket bounds the request volume without touching the lockout semantics,
-      // and it counts every submission — including the ones that succeed.
-      //
-      // The ceiling is a generous multiple of the lockout, so it is reached only
-      // by something automated; a human fumbling a paste cannot trip it.
-      if (config.RATE_LIMITER_ENABLED) {
-        const submissions = await store.countAttempt(
-          BUCKET.submit,
-          ip,
-          config.RATE_LIMITER_LOGIN_WINDOW,
-        );
-        if (submissions > config.RATE_LIMITER_LOGIN_MAX * SUBMIT_BUDGET_FACTOR) {
-          log().warn({
-            evt: 'authorize_flooded',
-            host: pending.hostname,
-            ip,
-            submissions,
-          });
-          return await retry('rate_limited_login', 429);
-        }
+      if (await consentGatesBlock({ config, store, ip, username, hostname: pending.hostname })) {
+        return await retry('rate_limited_login', 429);
       }
 
       const countFailure = async () => {
@@ -588,9 +692,34 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono<AppEnv> {
     const ip = clientIp(c, config.RATE_LIMITER_TRUSTED_PROXY_HOPS);
 
     if (config.RATE_LIMITER_ENABLED) {
-      const attempts = await store.countAttempt(BUCKET.token, ip, config.RATE_LIMITER_TOKEN_WINDOW);
-      if (attempts > config.RATE_LIMITER_TOKEN_MAX) {
-        log().warn({ evt: 'token_rate_limited', ip });
+      // Keyed on the client, not on the address. /token is reached
+      // server-to-server by hosted AI clients — claude.ai calls it from
+      // Anthropic's broker egress, never from the user's browser — so an
+      // address-keyed budget is one budget shared by every user behind that
+      // broker. At 60/60s the first busy user takes down everyone else's
+      // ability to refresh *and* to reconnect.
+      //
+      // Keyed on the PAIR, never on the assertion alone. `client_id` is not a
+      // secret — for a CIMD client it is a public https URL shared by every user
+      // of that AI client — so a bucket keyed on it alone is one a stranger can
+      // spend: 61 requests a minute carrying someone else's client_id would 429
+      // every genuine refresh AND every reconnect for all users of that client.
+      // Mixing the address back in keeps the per-client fairness and makes the
+      // bucket unreachable by anyone but its own caller.
+      const asserted = form['client_id'] ?? '';
+      const [byClient, byAddress] = await Promise.all([
+        store.countAttempt(
+          BUCKET.token,
+          asserted ? `c:${asserted}|ip:${ip}` : `ip:${ip}`,
+          config.RATE_LIMITER_TOKEN_WINDOW,
+        ),
+        store.countAttempt(BUCKET.tokenIp, ip, config.RATE_LIMITER_TOKEN_WINDOW),
+      ]);
+      if (
+        byClient > config.RATE_LIMITER_TOKEN_MAX ||
+        byAddress > config.RATE_LIMITER_TOKEN_MAX * TOKEN_IP_BUDGET_FACTOR
+      ) {
+        log().warn({ evt: 'token_rate_limited', ip, by_client: byClient, by_address: byAddress });
         return c.json({ error: 'invalid_request', error_description: 'too many requests' }, 429);
       }
     }
@@ -662,8 +791,34 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono<AppEnv> {
   async function refresh(c: TokenCtx, form: Record<string, string>) {
     // Rotation: the presented refresh token is consumed here, so it cannot be
     // used twice. OAuth 2.1 requires this for public clients.
-    const resolved = await store.takeToken(form['refresh_token'] ?? '');
+    const presented = form['refresh_token'] ?? '';
+    const resolved = await store.takeToken(presented);
     if (resolved?.token.kind !== 'refresh') {
+      // Not necessarily invalid. `takeToken` is atomic, so when a client fires
+      // two refreshes at once — or retries one whose response it never received
+      // — exactly one wins and this is the loser holding a token that existed a
+      // moment ago. Answering `invalid_grant` tells it, per RFC 6749 §5.2, to
+      // discard a grant that is perfectly alive, and the user is disconnected
+      // by a race rather than by a fault.
+      //
+      // Within the grace window we re-serve the pair the winner already got.
+      // Nothing new is minted; see Store.putRotation.
+      const replayed =
+        config.AUTH_REFRESH_ROTATION_GRACE > 0 ? await lookUpReplay(store, presented) : null;
+      // Checked against the grant, not just the window: the pair in the record
+      // dies the moment the grant is revoked, and answering 200 with dead
+      // tokens would tell the client everything is fine.
+      if (replayed && (await store.getGrant(replayed.grantId))) {
+        log().info({ evt: 'refresh_replayed' });
+        return c.json(replayed.response);
+      }
+      // This branch used to return without a word, so the one failure a client
+      // reports as "the connector stopped working" left no trace at all.
+      log().warn({
+        evt: 'refresh_rejected',
+        reason: resolved ? 'not_a_refresh_token' : 'unknown_token',
+        presented: presented !== '',
+      });
       return c.json({ error: 'invalid_grant', error_description: 'unknown refresh token' }, 400);
     }
     const { grant } = resolved;
@@ -695,22 +850,64 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono<AppEnv> {
       );
     }
 
+    // ── Mint, and remember, BEFORE any network call ──────────────────────────
+    // The race this covers is two refreshes arriving milliseconds apart, and the
+    // probe below blocks for up to five seconds against someone else's server.
+    // Writing the grace record after it left exactly that race unhandled: the
+    // loser looked for the record microseconds after losing, found nothing, and
+    // got `invalid_grant` — the outcome the window exists to prevent.
+    //
+    // Minting early is safe. If the probe below revokes the grant, this pair
+    // dies with it: both tokens are pointers into `grant:<id>`, and the replay
+    // path above re-checks the grant before serving. Nothing usable escapes.
+    const issued = await issueTokens(grant);
+    if (config.AUTH_REFRESH_ROTATION_GRACE > 0) {
+      await store.putRotation(
+        presented,
+        { grantId: grant.grantId, response: issued },
+        config.AUTH_REFRESH_ROTATION_GRACE,
+      );
+    }
+
     const probe = await probeApiKey(`https://${grant.hostname}`, apiKey, {
       timeoutMs: Math.min(config.N8N_PROBE_TIMEOUT_MS, 5_000),
     });
-    if (!probe.ok && (probe.code === 'bad_key' || probe.code === 'insufficient_permissions')) {
-      await store.revokeGrant(grant.grantId);
+    //
+    // `insufficient_permissions` is deliberately no longer in this set. It says
+    // the key is real and the role changed — an operator's doing, which logging
+    // the user out does not undo. It is logged below like any other fail-open.
+    if (!probe.ok && probe.code === 'bad_key') {
+      const strikes = await store.countAttempt(
+        BUCKET.badKey,
+        grant.grantId,
+        badKeyStrikeWindow(config.AUTH_ACCESS_TOKEN_TTL),
+      );
+      if (strikes >= BAD_KEY_STRIKES) {
+        await store.revokeGrant(grant.grantId);
+        await store.clearAttempts(BUCKET.badKey, grant.grantId);
+        log().warn({
+          evt: 'grant_revoked',
+          reason: probe.code,
+          strikes,
+          host: grant.hostname,
+          username: grant.username,
+        });
+        return c.json(
+          { error: 'invalid_grant', error_description: 'the n8n API key is no longer valid' },
+          400,
+        );
+      }
       log().warn({
-        evt: 'grant_revoked',
-        reason: probe.code,
+        evt: 'bad_key_strike',
+        strikes,
+        needed: BAD_KEY_STRIKES,
         host: grant.hostname,
         username: grant.username,
       });
-      return c.json(
-        { error: 'invalid_grant', error_description: 'the n8n API key is no longer valid' },
-        400,
-      );
     }
+
+    // Strikes only mean something consecutively, so any healthy probe wipes them.
+    if (probe.ok) await store.clearAttempts(BUCKET.badKey, grant.grantId);
 
     // The fail-open above is deliberate, but it must not also be silent. The
     // interactive path logs `credential_rejected` for every non-ok probe;
@@ -728,7 +925,7 @@ export function createOAuthRoutes(deps: OAuthDeps): Hono<AppEnv> {
 
     await store.touchGrant(grant);
     log().info({ evt: 'token_issued', grant: 'refresh', host: grant.hostname });
-    return c.json(await issueTokens(grant));
+    return c.json(issued);
   }
 
   async function issueTokens(grant: Grant) {

@@ -156,7 +156,28 @@ describe('formBody', () => {
 describe('app error handling', () => {
   it('turns an unexpected throw into a 500 with no internal detail', async () => {
     const harness = createHarness();
-    // Reach in and break the store so a handler throws.
+    // Reach in and break a handler that has no outage path of its own.
+    const broken = harness.store as unknown as { getClient: () => Promise<never> };
+    broken.getClient = () => Promise.reject(new Error('secret internal detail'));
+
+    const response = await harness.fetch('/authorize?client_id=x&response_type=code');
+    expect(response.status).toBe(500);
+    const body = await response.text();
+    expect(body).not.toContain('secret internal detail');
+    expect(JSON.parse(body)).toEqual({ error: 'internal_error' });
+  });
+
+  it('answers a store outage on the MCP path with 503, never 500 or 401', async () => {
+    // The store REJECTS during a Redis stall — node-redis arms a 5s per-command
+    // timeout and commands queued while the socket is down inherit it — so this
+    // path used to reach app.onError as a bare 500.
+    //
+    // 401 would be worse than 500: a challenge tells the client its perfectly
+    // good grant is dead, so a blip would have every connected user
+    // re-authorize, and the OAuth path writes to the same Redis, so the
+    // reconnect fails too. That is "reconnecting does not help" manufactured
+    // out of a few seconds of Redis.
+    const harness = createHarness();
     const broken = harness.store as unknown as { resolveToken: () => Promise<never> };
     broken.resolveToken = () => Promise.reject(new Error('secret internal detail'));
 
@@ -165,10 +186,14 @@ describe('app error handling', () => {
       headers: { authorization: 'Bearer x' },
       body: '{}',
     });
-    expect(response.status).toBe(500);
+    expect(response.status).toBe(503);
+    expect(response.headers.get('retry-after')).toBe('5');
+    expect(response.headers.get('www-authenticate')).toBeNull();
+
     const body = await response.text();
     expect(body).not.toContain('secret internal detail');
-    expect(JSON.parse(body)).toEqual({ error: 'internal_error' });
+    // JSON-RPC shaped, so the client parses it rather than choking on prose.
+    expect(JSON.parse(body)).toMatchObject({ jsonrpc: '2.0', id: null });
   });
 
   it('reports readiness as degraded when the store is down', async () => {

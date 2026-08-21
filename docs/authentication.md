@@ -205,12 +205,21 @@ master-key rotation that disconnects everybody.
 
 ### Re-validation on refresh
 
-Every refresh re-probes the stored key, so a key deleted in n8n ends the grant at
-the next refresh rather than working for the rest of the refresh window. Two
-asymmetries are deliberate:
+Every refresh re-probes the stored key, so a key deleted in n8n ends the grant
+rather than working for the rest of the refresh window. Three asymmetries are
+deliberate:
 
-- **Only a hard rejection (401/403) revokes.** An unreachable instance must not
-  log out every user of that instance during a maintenance window.
+- **Only a rejection of the key itself revokes, and only repeatedly.** A
+  challenge-less 401 (`bad_key`) counts a strike; three consecutive strikes end
+  the grant, and any healthy probe wipes the count. One sample is not evidence:
+  a Cloudflare block page, an n8n mid-restart and a licence-check window all
+  answer that way, and revoking on the first one deleted the grant — after
+  which the user's reconnect ran the same probe and blamed their key.
+- **A 403 (`insufficient_permissions`) never revokes.** It says the key is real
+  and the role changed. That is an operator's doing and logging the user out
+  does not undo it; n8n's own authorization remains the boundary.
+- **An unreachable instance never revokes.** It must not log out every user of
+  that instance during a maintenance window.
 - **The probe timeout is capped well below the ~30 s a client allows for a
   refresh.** Blowing that budget fails the refresh anyway, and then looks like
   our bug rather than a slow n8n.

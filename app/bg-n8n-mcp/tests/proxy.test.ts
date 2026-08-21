@@ -27,7 +27,7 @@ const OTHER_TENANT = 'other.wild.example';
 let harness: Harness;
 let stub: FetchStub;
 /** What the stubbed upstream answers. Reassigned per test. */
-let upstream: (request: Request) => Response | Promise<Response>;
+let upstream: (request: Request, init?: RequestInit) => Response | Promise<Response>;
 
 beforeEach(() => {
   harness = createHarness();
@@ -36,10 +36,10 @@ beforeEach(() => {
       status: 200,
       headers: { 'content-type': 'application/json', 'mcp-session-id': 'sess-123' },
     });
-  stub = stubFetch(async (request) => {
+  stub = stubFetch(async (request, init) => {
     // The n8n probe during consent, versus the n8n-mcp upstream during proxying.
     if (request.url.includes('/api/v1/workflows')) return n8nWorkflowsOk();
-    return await upstream(request);
+    return await upstream(request, init);
   });
 });
 
@@ -323,6 +323,156 @@ describe('upstream response handling', () => {
     expect(response.headers.get('cache-control')).toContain('no-transform');
     expect(response.headers.get('content-length')).toBeNull();
   });
+
+  it('carries the middleware headers on a relayed response', async () => {
+    // Hono merges headers a middleware set BEFORE next() only when the handler
+    // answers through the context. This route is the only one that relays a
+    // stream, so a bare `new Response` silently dropped CORS and X-Request-Id —
+    // and dropped them on the SUCCESSFUL relays only, while every error path
+    // (401, 429, 502, 503) goes through c.json and carried them. A browser
+    // client could read the 401 challenge, complete OAuth, and then have its
+    // first good response blocked with nothing in the log but a 200.
+    const token = await accessTokenFor(TENANT);
+    const response = await harness.fetch(`/i/${TENANT}/mcp`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        origin: 'https://claude.ai',
+        'content-type': 'application/json',
+      },
+      body: '{}',
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('access-control-allow-origin')).toBe('https://claude.ai');
+    expect(response.headers.get('x-request-id')).toBeTruthy();
+    // And the upstream's own headers still survive the trip.
+    expect(response.headers.get('mcp-session-id')).toBe('sess-123');
+  });
+
+  it('gives up when the backend never sends headers', async () => {
+    // The other side of the timeout rewiring. Making N8N_MCP_TIMEOUT_MS stop at
+    // the headers must not mean it stopped working: an upstream that accepts the
+    // connection and then says nothing has to end as a 502, not as a request
+    // held until some other layer times out.
+    harness = createHarness({ N8N_MCP_TIMEOUT_MS: '5000' });
+    const token = await accessTokenFor(TENANT);
+
+    // Armed only now: the consent flow above also runs through this stub, and a
+    // backend that never answers would hang the OAuth handshake instead.
+    upstream = (_request, init) =>
+      new Promise<Response>((_, reject) => {
+        // The signal the proxy actually passed, not the copy `new Request` makes.
+        const signal = init?.signal as AbortSignal;
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+
+    const started = Date.now();
+    const response = await harness.fetch(`/i/${TENANT}/mcp`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: '{}',
+    });
+
+    expect(response.status).toBe(502);
+    // Not an instant failure: the deadline is what ended it.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(4_500);
+    // A backend that never answered is not an auth problem, so no challenge.
+    expect(response.headers.get('www-authenticate')).toBeNull();
+  }, 20_000);
+
+  it('forwards a client hang-up to the upstream call', async () => {
+    // Half of the signal wiring, and the half that is easy to lose while fixing
+    // the other one. Without it an abandoned SSE stream keeps an upstream
+    // session alive until its idle timeout, and n8n-mcp caps concurrent
+    // sessions — so abandoned tabs eventually exhaust the cap for everyone.
+    let upstreamSignal: AbortSignal | undefined;
+    upstream = (_request, init) => {
+      // The signal the proxy actually passed, not the copy `new Request` makes;
+      // see stubFetch in helpers.ts for why the copy is not trustworthy here.
+      upstreamSignal = init?.signal as AbortSignal;
+      return new Response('event: message\ndata: {}\n\n', {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    };
+
+    const token = await accessTokenFor(TENANT);
+    const client = new AbortController();
+    await harness.fetch(`/i/${TENANT}/mcp`, {
+      method: 'GET',
+      headers: { authorization: `Bearer ${token}`, accept: 'text/event-stream' },
+      signal: client.signal,
+    });
+
+    expect(upstreamSignal?.aborted).toBe(false);
+    client.abort();
+    expect(upstreamSignal?.aborted).toBe(true);
+  });
+
+  it('keeps a streaming response alive past the upstream timeout', async () => {
+    // The regression guard for the 120s guillotine.
+    //
+    // A signal handed to `fetch` stays subscribed for the entire lifetime of
+    // `response.body`, not just the header phase. Composing
+    // `AbortSignal.timeout(N8N_MCP_TIMEOUT_MS)` into the request signal
+    // therefore made it an absolute deadline on the RESPONSE: the spec's
+    // long-lived `GET /mcp` channel was reset every N8N_MCP_TIMEOUT_MS without
+    // exception, and any `POST /mcp` whose SSE-framed answer legitimately ran
+    // longer was truncated with neither a JSON-RPC result nor a JSON-RPC error,
+    // so the tool call simply hung. The timeout must bound the wait for
+    // HEADERS and nothing else.
+    //
+    // Deliberately slow: 5s is the configured floor for N8N_MCP_TIMEOUT_MS, and
+    // the only way to prove a deadline does not fire is to outlive it.
+    harness = createHarness({ N8N_MCP_TIMEOUT_MS: '5000' });
+
+    let upstreamSignal: AbortSignal | undefined;
+    let emit: ((frame: string) => void) | undefined;
+    upstream = (_request, init) => {
+      // The signal the proxy actually passed, not the copy `new Request` makes;
+      // see stubFetch in helpers.ts for why the copy is not trustworthy here.
+      upstreamSignal = init?.signal as AbortSignal;
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        start(streamController) {
+          emit = (frame) => streamController.enqueue(encoder.encode(frame));
+          // Model undici: an abort after the headers errors the body rather
+          // than rejecting the (already settled) fetch promise.
+          upstreamSignal?.addEventListener(
+            'abort',
+            () => streamController.error(new DOMException('aborted', 'TimeoutError')),
+            { once: true },
+          );
+          emit('event: message\ndata: {"phase":"first"}\n\n');
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    };
+
+    const token = await accessTokenFor(TENANT);
+    const response = await harness.fetch(`/i/${TENANT}/mcp`, {
+      method: 'GET',
+      headers: { authorization: `Bearer ${token}`, accept: 'text/event-stream' },
+    });
+    expect(response.status).toBe(200);
+
+    const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    expect(decoder.decode((await reader.read()).value)).toContain('first');
+
+    // Outlive the deadline.
+    await new Promise((resolve) => setTimeout(resolve, 5_400));
+    expect(upstreamSignal?.aborted).toBe(false);
+
+    // This read is the one that used to throw.
+    emit?.('event: message\ndata: {"phase":"after-the-deadline"}\n\n');
+    expect(decoder.decode((await reader.read()).value)).toContain('after-the-deadline');
+    await reader.cancel();
+  }, 20_000);
 
   it('turns an upstream 401 into an OAuth challenge', async () => {
     // Otherwise the user sees an opaque tool error instead of a Connect prompt.

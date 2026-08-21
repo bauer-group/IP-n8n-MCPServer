@@ -24,7 +24,13 @@ docker compose -f docker-compose.traefik.yml logs -f n8n-mcp-gateway | jq
 | `consent_granted` | **info** | A grant was created. Carries `username`, `host`, `n8n_user`, `grant_id`. |
 | `token_issued` | info | `grant: code` or `grant: refresh` |
 | `pkce_failed` | warn | Verifier did not match the challenge |
-| `grant_revoked` | warn | Carries `reason`: `client_request`, `bad_key`, `insufficient_permissions` |
+| `grant_revoked` | warn | Carries `reason`: `client_request` or `bad_key` (with `strikes`). A role change no longer revokes. |
+| `bad_key_strike` | warn | One `bad_key` verdict short of revocation. Carries `strikes` and `needed`. |
+| `refresh_probe_failed` | warn | The unattended probe failed in a way that does not revoke. Carries `reason`. |
+| `refresh_rejected` | warn | A refresh token was neither live nor inside the rotation-grace window |
+| `refresh_replayed` | info | The loser of a rotation race was re-served the winner's pair |
+| `consent_unknown_client` | warn | The client could not be resolved at consent time; the request was put back |
+| `store_unavailable` | error | A store call failed on the MCP path; the caller got 503, not a challenge |
 | `grant_undecryptable` | warn | The storage key was rotated under a live grant |
 | `audience_mismatch` | **warn** | A token for one tenant was presented on another's path |
 | `tenant_unusable` | warn | Allowlisted, but DNS failed or it resolved into private space |
@@ -68,9 +74,12 @@ Alternatives:
 
 - **The user removes the connector in Claude** — the client calls `/revoke`,
   which drops the grant.
-- **Delete the API key in n8n** — access ends at the next refresh, at the latest
-  after `AUTH_ACCESS_TOKEN_TTL`. The refresh path re-probes the key and revokes
-  the grant on a hard rejection.
+- **Delete the API key in n8n** — the n8n-side access ends immediately, because
+  the key is what authorizes every proxied call. The *grant* ends after three
+  consecutive `bad_key` verdicts on the refresh path (roughly three refreshes;
+  watch for `bad_key_strike` then `grant_revoked`). If you need the grant gone
+  now, use `POST /revoke` or delete the grant record — do not wait for the
+  strikes.
 
 ### Everyone
 
@@ -140,13 +149,21 @@ the gateway.
 This stack sets it to 200 via `BACKEND_MAX_SESSIONS`; n8n-mcp's own default is
 100, so the compose files raise it rather than restate it.
 
-The unit is the **grant**, not the user and not the n8n instance: the gateway
-derives `x-instance-id` from the grant id, so one grant holds at most one
-concurrent session. A user who connects the same instance from two different
-MCP clients authorizes twice, and that is two grants. An idle grant costs
-nothing — sessions are reaped after `SESSION_TIMEOUT_MINUTES` (upstream default
-30), so the live count tracks clients active in a rolling half-hour, not grants
-in Redis.
+The isolation unit is the **grant**, not the user and not the n8n instance: the
+gateway derives `x-instance-id` from the grant id, so one user's sessions can
+never evict another's. A user who connects the same instance from two different
+MCP clients authorizes twice, and that is two grants.
+
+One grant does **not** mean one session. A grant is one *authorization*, and
+every session it opens shares it — several claude.ai conversations, the
+connector settings page re-listing tools while a chat is live, two `claude`
+terminals on one machine. That is why
+`MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS=true` is required; see the FAQ entry
+below for what happens with it off.
+
+An idle grant costs nothing — sessions are reaped after
+`SESSION_TIMEOUT_MINUTES` (upstream default 30), so the live count tracks
+sessions active in a rolling half-hour, not grants in Redis.
 
 At the ceiling the backend answers HTTP 429 / JSON-RPC `-32000` and evicts
 nothing, so the cap is a wall rather than a queue.
@@ -207,13 +224,24 @@ Yes. Configuration is parsed once at boot, deliberately: a process that
 re-reads config at runtime can drift into a state no config file describes.
 
 **"A user connected twice and the first session died."**
-Expected with `MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS=false`. One grant means
-one live backend session, and reconnecting under **that same grant** cleans up
-the previous one. Set it to `true` if a single connector genuinely needs several
-concurrent sessions.
+`MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS` is `false`. Set it to `true` — the
+compose files now default it that way, and a deployment carrying the old value
+in its `.env` will keep reproducing this.
 
-Note the scope: the cleanup matches on `x-instance-id`, which is derived from
-the grant id. Re-*authorizing* mints a new grant and therefore a new id, so the
-superseded session is not matched and lingers until the idle reaper takes it.
-That is bounded and harmless, but it is why session counts can briefly exceed
-the number of connected clients.
+With it off, upstream evicts **every** session sharing an `x-instance-id`
+whenever one initialises. Since that id comes from the grant, and one grant is
+shared by every session that authorization opens, a single user's two claude.ai
+conversations knock each other offline in a loop: A initialises and evicts B, B
+gets `404 Session not found`, re-initialises, evicts A. Reconnecting does not
+break the loop — it mints one new grant that both conversations immediately
+share again.
+
+Confirm it from the backend log, one line per eviction:
+
+```bash
+docker logs bg-n8n-mcp-backend 2>&1 | grep -E "instance_reconnect|Session not found or expired"
+```
+
+Turning it on costs no isolation: upstream still mints a distinct session per
+`initialize`, and sessions are reclaimed by transport close, the idle reaper and
+`BACKEND_MAX_SESSIONS` instead of by that eager eviction pass.

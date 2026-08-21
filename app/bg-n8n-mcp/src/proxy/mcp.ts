@@ -22,28 +22,38 @@
  *     strips them too (see the compose files) — this is the hop that must not
  *     rely on that.
  *
- *  4. **Per-grant `x-instance-id`.** n8n-mcp's default
- *     `MULTI_TENANT_SESSION_STRATEGY=instance` evicts every existing session
- *     sharing an instance id whenever one initialises. Sending the n8n
- *     hostname there would mean any user connecting kicks every other user of
- *     that instance off. A per-grant id gives each user their own session and
- *     makes the eviction do the useful thing instead: cleaning up that user's
- *     own stale session on reconnect.
+ *  4. **Per-grant `x-instance-id`.** n8n-mcp's
+ *     `MULTI_TENANT_SESSION_STRATEGY=instance` scopes sessions by instance id.
+ *     Sending the n8n hostname there would mean any user connecting kicks every
+ *     other user of that instance off; a per-grant id isolates them.
  *
- *  5. **Stream, do not buffer.** MCP responses can be SSE that stay open for
- *     the length of a tool call, with keep-alive comments every 15s. Anything
- *     that accumulates the body turns a live stream into a timeout.
+ *     What a per-grant id does **not** do is identify a connection. One grant
+ *     is one *authorization*, and every session it opens shares it — several
+ *     claude.ai conversations, the settings page re-listing tools mid-chat, two
+ *     `claude` terminals. So the deployment must run
+ *     `MULTI_TENANT_ALLOW_CONCURRENT_SESSIONS=true`: with it off, upstream
+ *     evicts every session sharing an instance id on each initialise, and one
+ *     user's two windows evict each other in a loop that reconnecting cannot
+ *     break — a new grant is a new id that those same sessions immediately
+ *     share again. See the compose files.
+ *
+ *  5. **Stream, do not buffer — and do not put a deadline on the stream.** MCP
+ *     responses can be SSE that stay open for the length of a tool call, with
+ *     keep-alive comments every 15s. Anything that accumulates the body turns a
+ *     live stream into a timeout, and so does any abort signal that outlives the
+ *     response headers: `N8N_MCP_TIMEOUT_MS` bounds the wait for headers only.
  */
 
 import { isIP } from 'node:net';
 import type { Context } from 'hono';
+import type { StatusCode } from 'hono/utils/http-status';
 import type { Config } from '../config.js';
 import { hashKey, unseal } from '../lib/crypto.js';
 import { clientIp } from '../lib/request.js';
 import { log, short } from '../logger.js';
 import { checkTenant, resolveTenant } from '../n8n/tenant.js';
 import { bearerChallenge, resourceFor, resourceMetadataUrlFor, SCOPE } from '../oauth/metadata.js';
-import type { Store } from '../store/index.js';
+import type { ResolvedToken, Store } from '../store/index.js';
 
 /**
  * Headers that must never be copied from the inbound request.
@@ -171,11 +181,21 @@ function buildUpstreamHeaders(input: {
  * The body is passed through as a stream — never read here. An SSE response can
  * stay open for the length of a tool call, and anything that accumulates it
  * turns a live stream into a timeout.
+ *
+ * Returned through `c.body` rather than as a bare `new Response`, and that is
+ * not cosmetic. Hono only merges headers a middleware set *before* `next()`
+ * when the handler answers through the context; a raw Response discards them
+ * silently. This route was the only one in the app returning a raw Response, so
+ * it was the only one where `X-Request-Id` and the CORS headers went missing —
+ * and it went missing on exactly the successful relays, while every error path
+ * (401, 429, 502, 503) answers via `c.json` and carried them. A browser client
+ * could therefore read the challenge, complete OAuth, and then have its first
+ * successful response blocked with nothing in the log but a 200.
  */
-function relayResponse(upstream: Response): Response {
-  const headers = new Headers();
+function relayResponse(c: Context, upstream: Response): Response {
+  const headers: Record<string, string> = {};
   for (const [name, value] of upstream.headers) {
-    if (!DROPPED_RESPONSE_HEADERS.has(name.toLowerCase())) headers.set(name, value);
+    if (!DROPPED_RESPONSE_HEADERS.has(name.toLowerCase())) headers[name] = value;
   }
 
   if ((upstream.headers.get('content-type') ?? '').includes('text/event-stream')) {
@@ -183,20 +203,102 @@ function relayResponse(upstream: Response): Response {
     // intermediaries rewriting the body, and `X-Accel-Buffering: no` is the
     // nginx/Traefik opt-out. Without these the first SSE frame can sit in a
     // proxy buffer until the stream ends, which reads as a hung tool call.
-    headers.set('cache-control', 'no-cache, no-transform');
-    headers.set('x-accel-buffering', 'no');
+    headers['cache-control'] = 'no-cache, no-transform';
+    headers['x-accel-buffering'] = 'no';
   }
 
-  return new Response(upstream.body, {
-    status: upstream.status,
-    statusText: upstream.statusText,
-    headers,
-  });
+  // `statusText` is dropped: nothing in MCP reads it, and it is not worth
+  // reaching around the context for.
+  return c.newResponse(upstream.body, upstream.status as StatusCode, headers);
 }
+
+/**
+ * `Retry-After` for a store outage.
+ *
+ * Short on purpose: a Redis blip is usually seconds, and the point of the
+ * header is to stop a client backing off for minutes over something that has
+ * already recovered.
+ */
+const STORE_RETRY_AFTER_SECONDS = 5;
 
 /** JSON-RPC shaped error, so a client parses it rather than choking on prose. */
 function jsonRpcError(message: string): Record<string, unknown> {
   return { jsonrpc: '2.0', error: { code: -32603, message }, id: null };
+}
+
+/**
+ * Everything a caller must clear before this gateway will talk to n8n-mcp:
+ * a bearer token, a token that resolves to a live grant, that grant being for
+ * *this* tenant, and a throughput budget that is not spent.
+ *
+ * Lifted out of the handler rather than inlined because it is where the
+ * security properties live and it reads better as one piece — and because the
+ * handler is otherwise past the complexity budget this repo enforces.
+ */
+async function admit(input: {
+  readonly c: Context;
+  readonly config: Config;
+  readonly store: Store;
+  readonly hostname: string;
+  readonly challenge: (error: string, description: string, status?: 401 | 403) => Response;
+  readonly storeUnavailable: (error: unknown) => Response;
+}): Promise<{ ok: true; resolved: ResolvedToken } | { ok: false; response: Response }> {
+  const { c, config, store, hostname, challenge, storeUnavailable } = input;
+  const deny = (response: Response) => ({ ok: false as const, response });
+
+  const authorization = c.req.header('authorization') ?? '';
+  const presented = /^bearer /i.test(authorization) ? authorization.slice(7).trim() : '';
+  if (!presented) {
+    // The 401 must be at the HTTP layer, not a JSON-RPC error inside a 200.
+    // A 200 wrapping {"isError": true} is handed to the model as a tool result
+    // and the user never sees a Connect prompt.
+    return deny(challenge('invalid_token', 'missing bearer token'));
+  }
+
+  let resolved: ResolvedToken | null;
+  try {
+    resolved = await store.resolveToken(presented);
+  } catch (error) {
+    return deny(storeUnavailable(error));
+  }
+  if (resolved?.token.kind !== 'access') {
+    return deny(challenge('invalid_token', 'the access token is invalid or has expired'));
+  }
+
+  // ── Audience binding ───────────────────────────────────────────────────────
+  if (resolved.token.resource !== resourceFor(config, hostname)) {
+    log().warn({
+      evt: 'audience_mismatch',
+      path_host: hostname,
+      token_host: resolved.grant.hostname,
+      grant_id: short(resolved.grant.grantId),
+    });
+    return deny(challenge('invalid_token', 'this token is not valid for this resource'));
+  }
+
+  // ── Per-grant rate limit ───────────────────────────────────────────────────
+  if (!config.RATE_LIMITER_ENABLED || config.RATE_LIMITER_MCP_MAX <= 0) {
+    return { ok: true, resolved };
+  }
+
+  let used: number;
+  try {
+    used = await store.countAttempt('mcp', resolved.grant.grantId, config.RATE_LIMITER_MCP_WINDOW);
+  } catch (error) {
+    return deny(storeUnavailable(error));
+  }
+  if (used > config.RATE_LIMITER_MCP_MAX) {
+    log().warn({ evt: 'mcp_rate_limited', host: hostname, username: resolved.grant.username });
+    c.header('Retry-After', String(config.RATE_LIMITER_MCP_WINDOW));
+    return deny(
+      c.json(
+        { jsonrpc: '2.0', error: { code: -32000, message: 'Rate limit exceeded' }, id: null },
+        429,
+      ),
+    );
+  }
+
+  return { ok: true, resolved };
 }
 
 export function createMcpProxy(deps: ProxyDeps) {
@@ -230,56 +332,34 @@ export function createMcpProxy(deps: ProxyDeps) {
       return c.json({ error, error_description: description }, status);
     };
 
-    // ── Authenticate ─────────────────────────────────────────────────────────
-    const authorization = c.req.header('authorization') ?? '';
-    const presented = /^bearer /i.test(authorization) ? authorization.slice(7).trim() : '';
-    if (!presented) {
-      // The 401 must be at the HTTP layer, not a JSON-RPC error inside a 200.
-      // A 200 wrapping {"isError": true} is handed to the model as a tool
-      // result and the user never sees a Connect prompt.
-      return challenge('invalid_token', 'missing bearer token');
-    }
+    // A store that is briefly away must not be reported as an auth failure.
+    // `resolveToken` REJECTS on a Redis stall (node-redis arms a 5s per-command
+    // timeout, and commands queued while the socket is down inherit it) rather
+    // than returning null, and an unguarded await reached `app.onError` as a
+    // bare 500. Both of the obvious answers are wrong:
+    //
+    //  - 500 tells the client nothing actionable and carries no `Retry-After`.
+    //  - 401 is worse: a challenge tells the client its perfectly good grant is
+    //    dead, so a blip would have every connected user re-authorize — and the
+    //    OAuth path writes to the same Redis, so the reconnect fails too.
+    //
+    // 503 is the honest answer: this is our problem, keep your token, come back.
+    const storeUnavailable = (error: unknown) => {
+      log().error({ evt: 'store_unavailable', host: known.hostname, detail: String(error) });
+      c.header('Retry-After', String(STORE_RETRY_AFTER_SECONDS));
+      return c.json(jsonRpcError('the gateway store is temporarily unavailable'), 503);
+    };
 
-    const resolved = await store.resolveToken(presented);
-    if (resolved?.token.kind !== 'access') {
-      return challenge('invalid_token', 'the access token is invalid or has expired');
-    }
-
-    // ── Audience binding ─────────────────────────────────────────────────────
-    if (resolved.token.resource !== resourceFor(config, known.hostname)) {
-      log().warn({
-        evt: 'audience_mismatch',
-        path_host: known.hostname,
-        token_host: resolved.grant.hostname,
-        grant_id: short(resolved.grant.grantId),
-      });
-      return challenge('invalid_token', 'this token is not valid for this resource');
-    }
-
-    // ── Per-token rate limit ─────────────────────────────────────────────────
-    if (config.RATE_LIMITER_ENABLED && config.RATE_LIMITER_MCP_MAX > 0) {
-      const used = await store.countAttempt(
-        'mcp',
-        resolved.grant.grantId,
-        config.RATE_LIMITER_MCP_WINDOW,
-      );
-      if (used > config.RATE_LIMITER_MCP_MAX) {
-        log().warn({
-          evt: 'mcp_rate_limited',
-          host: known.hostname,
-          username: resolved.grant.username,
-        });
-        c.header('Retry-After', String(config.RATE_LIMITER_MCP_WINDOW));
-        return c.json(
-          {
-            jsonrpc: '2.0',
-            error: { code: -32000, message: 'Rate limit exceeded' },
-            id: null,
-          },
-          429,
-        );
-      }
-    }
+    const gate = await admit({
+      c,
+      config,
+      store,
+      hostname: known.hostname,
+      challenge,
+      storeUnavailable,
+    });
+    if (!gate.ok) return gate.response;
+    const { resolved } = gate;
 
     const apiKey = unseal(store.keyring, resolved.grant.sealedKey);
     if (apiKey === null) {
@@ -322,6 +402,38 @@ export function createMcpProxy(deps: ProxyDeps) {
     const method = c.req.method;
     const hasBody = method !== 'GET' && method !== 'HEAD';
 
+    // The signal handed to `fetch` stays subscribed for the entire lifetime of
+    // `response.body`, not just the header phase. That makes the two things it
+    // has to carry pull in opposite directions, and they must be wired
+    // separately:
+    //
+    //  - **The client's abort must reach the whole stream.** When the client
+    //    hangs up, an abandoned SSE stream would otherwise keep an upstream
+    //    session alive until its idle timeout, and n8n-mcp caps concurrent
+    //    sessions. So it is forwarded and left armed.
+    //
+    //  - **N8N_MCP_TIMEOUT_MS must NOT.** It is a "did the backend answer at
+    //    all" budget. Composed in with `AbortSignal.timeout` it became an
+    //    absolute deadline on the response *body*, which is a guillotine on
+    //    exactly the two things this proxy exists to carry: the spec's
+    //    long-lived `GET /mcp` channel died every 120s without exception, and
+    //    any `POST /mcp` whose SSE-framed answer ran longer was truncated with
+    //    neither a JSON-RPC result nor a JSON-RPC error — the call simply hung.
+    //    Upstream's 15s keep-alive comments could not help; an absolute
+    //    deadline does not care that the stream is healthy.
+    //
+    // So: one controller, the client's abort forwarded to it for good, and a
+    // timer that is disarmed the moment the response headers land.
+    const controller = new AbortController();
+    const forwardAbort = () => controller.abort(c.req.raw.signal.reason);
+    if (c.req.raw.signal.aborted) forwardAbort();
+    else c.req.raw.signal.addEventListener('abort', forwardAbort, { once: true });
+
+    const headerDeadline = setTimeout(
+      () => controller.abort(new DOMException('the MCP backend did not answer', 'TimeoutError')),
+      config.N8N_MCP_TIMEOUT_MS,
+    );
+
     let upstream: Response;
     try {
       upstream = await fetch(`${config.N8N_MCP_URL}/mcp`, {
@@ -332,20 +444,24 @@ export function createMcpProxy(deps: ProxyDeps) {
         // is an avoidable failure mode. `duplex: 'half'` is required by the
         // fetch spec whenever the body is a stream.
         ...(hasBody && c.req.raw.body ? { body: c.req.raw.body, duplex: 'half' as const } : {}),
-        // When the client hangs up, tear down the upstream call too. Without
-        // this an abandoned SSE stream keeps an upstream session alive until
-        // its idle timeout, and n8n-mcp caps concurrent sessions.
-        signal: AbortSignal.any([c.req.raw.signal, AbortSignal.timeout(config.N8N_MCP_TIMEOUT_MS)]),
+        signal: controller.signal,
         redirect: 'manual',
       });
     } catch (error) {
       const aborted = c.req.raw.signal.aborted;
       if (aborted) {
         // The client left. Nothing to report and nobody to report it to.
-        return new Response(null, { status: 499 });
+        // 499 is nginx's "client closed request"; Hono's StatusCode union covers
+        // only registered codes, hence the cast. Still routed through the
+        // context so that EVERY response on this route goes through one door —
+        // that invariant is what stops the header-loss bug coming back.
+        return c.newResponse(null, 499 as StatusCode, {});
       }
       log().error({ evt: 'upstream_unreachable', detail: String(error) });
       return c.json(jsonRpcError('MCP backend unreachable'), 502);
+    } finally {
+      // Disarm before the body is relayed. Leaving it armed is the whole bug.
+      clearTimeout(headerDeadline);
     }
 
     // ── Translate upstream auth failures ─────────────────────────────────────
@@ -363,6 +479,6 @@ export function createMcpProxy(deps: ProxyDeps) {
       return challenge('invalid_token', 'the MCP backend rejected the stored credentials');
     }
 
-    return relayResponse(upstream);
+    return relayResponse(c, upstream);
   };
 }

@@ -103,7 +103,9 @@ export interface FetchStub {
  * care most about *which headers were sent* — the whole point of the tenant
  * header injection and stripping.
  */
-export function stubFetch(handler: (request: Request) => Response | Promise<Response>): FetchStub {
+export function stubFetch(
+  handler: (request: Request, init?: RequestInit) => Response | Promise<Response>,
+): FetchStub {
   const original = globalThis.fetch;
   const calls: StubbedCall[] = [];
 
@@ -114,7 +116,13 @@ export function stubFetch(handler: (request: Request) => Response | Promise<Resp
       method: request.method,
       headers: Object.fromEntries(request.headers),
     });
-    return await handler(request);
+    // `init` is handed through as well, unchanged. `new Request(input, init)`
+    // above re-derives a *dependent* abort signal, and a test that needs to
+    // observe an abort must watch the signal the caller actually passed rather
+    // than that copy — the copy has been seen not to mirror a late abort once
+    // enough work has run in the same worker. Everything the gateway puts on
+    // the wire is still asserted through `request`; only signals need `init`.
+    return await handler(request, init);
   }) as typeof fetch;
 
   return {

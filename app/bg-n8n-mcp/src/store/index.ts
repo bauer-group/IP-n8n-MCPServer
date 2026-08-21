@@ -23,9 +23,9 @@
  */
 
 import type { Config } from '../config.js';
-import { deriveKeyring, hashKey, type Keyring, randomToken } from '../lib/crypto.js';
+import { deriveKeyring, hashKey, type Keyring, randomToken, seal, unseal } from '../lib/crypto.js';
 import { log } from '../logger.js';
-import type { StoreBackend } from './backend.js';
+import type { StoreBackend, WindowKind } from './backend.js';
 import { MemoryBackend } from './memory.js';
 import { RedisBackend } from './redis.js';
 
@@ -105,6 +105,18 @@ export interface TokenRecord {
   readonly issuedAt: number;
 }
 
+/**
+ * What a just-rotated refresh token produced, kept for the grace window.
+ *
+ * `grantId` is here so a replay can be checked against a grant that may have
+ * been revoked in the meantime — the tokens in `response` die with it, and
+ * answering 200 with a dead pair would tell the client all is well.
+ */
+export interface RotationRecord {
+  readonly grantId: string;
+  readonly response: Record<string, unknown>;
+}
+
 /** A token resolved together with the grant it points at. */
 export interface ResolvedToken {
   readonly token: TokenRecord;
@@ -125,7 +137,33 @@ const NS = {
   pending: 'pend:',
   done: 'done:',
   rate: 'rl:',
+  rotation: 'rot:',
 } as const;
+
+/**
+ * Buckets whose window slides — i.e. whose TTL is re-armed on every increment.
+ *
+ * Exactly one, and it has to be argued for rather than assumed. `login` counts
+ * credential *verdicts*, so an increment means someone got a password wrong;
+ * extending the lockout on each one is the point of the counter.
+ *
+ * Every other bucket is a throughput budget that also counts requests it
+ * rejected. Sliding those meant a client retrying on 429 re-armed its own
+ * lockout with every retry: the bucket could not drain while the client kept
+ * trying, and at the one-hour `register`/`cimd` window that is indistinguishable
+ * from a permanent block — on the very path a user takes to reconnect.
+ *
+ * `badkey` slides for the same reason as `login`: it counts *verdicts* from the
+ * user's n8n, one per refresh, and the cadence belongs to the client rather than
+ * to this server. Under a fixed window anchored to the first strike, a client
+ * refreshing slowly could never land a third strike inside it — the counter
+ * would oscillate and a genuinely deleted n8n key would never end its grant.
+ *
+ * Deciding it here, from the bucket, rather than at each call site is what keeps
+ * the rule from drifting: a new limiter cannot pick the dangerous one by
+ * accident, because it does not get to pick at all.
+ */
+const SLIDING_BUCKETS: ReadonlySet<string> = new Set(['login', 'badkey']);
 
 /**
  * How long a consent screen may sit open before its request expires.
@@ -444,11 +482,15 @@ export class Store {
    * The identity is hashed before it becomes a key: these buckets are keyed by
    * client IP and by username, and neither belongs in a Redis keyspace an
    * operator might screenshot into a ticket.
+   *
+   * The window kind comes from `SLIDING_BUCKETS`, not from the caller.
    */
   async countAttempt(bucket: string, identity: string, windowSeconds: number): Promise<number> {
+    const window: WindowKind = SLIDING_BUCKETS.has(bucket) ? 'sliding' : 'fixed';
     return await this.#backend.incr(
       `${NS.rate}${bucket}:${hashKey(this.#keyring, identity)}`,
       windowSeconds,
+      window,
     );
   }
 
@@ -460,5 +502,64 @@ export class Store {
 
   async clearAttempts(bucket: string, identity: string): Promise<void> {
     await this.#backend.del(`${NS.rate}${bucket}:${hashKey(this.#keyring, identity)}`);
+  }
+
+  // ── Refresh-token rotation grace ───────────────────────────────────────────
+
+  /**
+   * Remember, briefly, which token pair a just-consumed refresh token produced.
+   *
+   * Rotation is atomic — `takeToken` is a GETDEL — so of two concurrent
+   * presentations of the same refresh token exactly one wins and the other gets
+   * `invalid_grant`, an RFC 6749 §5.2 code that tells a client to throw the
+   * grant away. A client that fires two requests at once (or retries a response
+   * it never received) therefore disconnects itself over a race rather than a
+   * fault.
+   *
+   * Keeping the answer for a few seconds turns the loser into a replay we can
+   * answer identically. This is not a hole in rotation: replaying inside the
+   * window mints **nothing new**, it re-serves the one pair already issued, and
+   * the window is far shorter than any refresh interval. RFC 9700 §4.14.2
+   * describes exactly this leeway.
+   *
+   * Keyed by an HMAC of the consumed token, like every other secret-shaped key
+   * here — and, unlike every other record, **sealed**, because the value is a
+   * live token pair rather than a pointer to one. Every other record in this
+   * store is deliberately worthless to whoever reads it: tokens live under
+   * hashes with no secret in the value, and the one credential there is
+   * (`Grant.sealedKey`) is AES-256-GCM sealed. Writing this response as plain
+   * JSON would put a working access **and** refresh token in the keyspace for
+   * the length of the grace window, which is the one property a Redis dump is
+   * not supposed to yield.
+   */
+  async putRotation(
+    consumedToken: string,
+    record: RotationRecord,
+    ttlSeconds: number,
+  ): Promise<void> {
+    if (!consumedToken) return;
+    await this.#backend.set(
+      NS.rotation + hashKey(this.#keyring, consumedToken),
+      seal(this.#keyring, JSON.stringify(record)),
+      ttlSeconds,
+    );
+  }
+
+  /** The pair a consumed refresh token produced, if it is still within grace. */
+  async getRotation(consumedToken: string): Promise<RotationRecord | null> {
+    if (!consumedToken) return null;
+    const sealed = await this.#backend.get(NS.rotation + hashKey(this.#keyring, consumedToken));
+    if (!sealed) return null;
+    // A storage-key rotation is the documented revoke-everything lever, so an
+    // unreadable record means "no grace", not "error".
+    const plain = unseal(this.#keyring, sealed);
+    if (!plain) return null;
+    try {
+      return JSON.parse(plain) as RotationRecord;
+    } catch {
+      // Sealed, so this cannot be tampering — only a record written by an
+      // older shape. Treat it as absent rather than throwing on the refresh path.
+      return null;
+    }
   }
 }
