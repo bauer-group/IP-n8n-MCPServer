@@ -4,6 +4,13 @@ All notable changes to this project are documented here. This file is maintained
 automatically by [semantic-release](https://github.com/semantic-release/semantic-release)
 on every release to `main`.
 
+## [0.4.6](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.4.5...v0.4.6) (2026-10-09)
+
+### 🔧 Maintenance
+
+* **ci:** removed issue AI summary workflow ([1a0fbcf](https://github.com/bauer-group/IP-n8n-MCPServer/commit/1a0fbcfc2586702ee41778e75d273033136407a9)), references [bauer-group/automation-templates#105](https://github.com/bauer-group/automation-templates/issues/105)
+* **deps:** update base image node-alpine [skip ci] ([51da313](https://github.com/bauer-group/IP-n8n-MCPServer/commit/51da3136300151ff3038e6cd2cd74f34b254b350))
+
 ## [0.4.5](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.4.4...v0.4.5) (2026-09-23)
 
 ### 🔧 Maintenance
