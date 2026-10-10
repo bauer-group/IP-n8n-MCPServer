@@ -4,6 +4,12 @@ All notable changes to this project are documented here. This file is maintained
 automatically by [semantic-release](https://github.com/semantic-release/semantic-release)
 on every release to `main`.
 
+## [0.4.7](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.4.6...v0.4.7) (2026-10-10)
+
+### 🐛 Bug Fixes
+
+* **deps:** updated hono, vitest, source-map-js and fast-copy ([229bed5](https://github.com/bauer-group/IP-n8n-MCPServer/commit/229bed5fb8be9b61cc400405daeb136af3db80eb))
+
 ## [0.4.6](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.4.5...v0.4.6) (2026-10-09)
 
 ### 🔧 Maintenance
