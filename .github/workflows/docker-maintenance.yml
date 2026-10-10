@@ -1,14 +1,32 @@
 # =============================================================================
-# Docker Maintenance — Auto-merge Dependabot PRs (bg-n8n-mcp Dockerfile)
+# Docker Maintenance — Auto-merge Dependabot PRs (every ecosystem)
 # =============================================================================
-# When Dependabot opens a PR bumping the node:26-alpine base image inside
-# app/bg-n8n-mcp/Dockerfile, this workflow auto-approves and merges it (after
-# validation passes), which then triggers docker-release.yml to build and push
-# the updated image.
+# Every Dependabot PR reaches this workflow (no paths: filter), so each one
+# gets an explicit decision and annotation instead of silently staying open.
+# A PR is merged only if it is a patch update (the module's default; a 0.x
+# update counts stricter) and the pull_request run of docker-release.yml
+# passed on its head commit. That run tests and builds from the PR's own
+# manifests and lockfile: tests.yml (biome, tsc, vitest with coverage and the
+# build, on Node 24 and 26) and the image build with its test stage.
 #
-# Scoped to the Dockerfile on purpose. The npm ecosystem is NOT auto-merged:
-# a dependency of an OAuth gateway is worth a human reading the changelog, and
-# the Docker test stage would catch only what the suite happens to cover.
+#   npm             app/bg-n8n-mcp/package.json + pnpm-lock.yaml
+#                   tested and built - patch updates are merged
+#   docker          app/bg-n8n-mcp/Dockerfile
+#                   image built and tested - but FROM node:${NODE_VERSION}
+#                   gives Dependabot no version to read, so it opens no PR;
+#                   check-base-images.yml tracks the base image instead
+#   docker-compose  docker-compose*.yml
+#                   docker-release.yml only VALIDATES these files, it never
+#                   starts the stack. Every image is ${VAR:-image}:${VAR:-tag},
+#                   which Dependabot does not parse, so it opens no PR. A
+#                   literal image tag added here would let its patch PR be
+#                   merged untested - keep the interpolated form.
+#   github-actions  .github/workflows/**
+#                   never merged: a CI change stays open for review
+#
+# The merge is made with GITHUB_TOKEN, which starts no push workflow: a
+# fix(deps) update is released with the next push to main or a manual run
+# of docker-release.yml.
 # =============================================================================
 
 name: 🔧 Docker Maintenance
@@ -16,8 +34,6 @@ name: 🔧 Docker Maintenance
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - 'app/bg-n8n-mcp/Dockerfile'
 
 permissions:
   contents: write
