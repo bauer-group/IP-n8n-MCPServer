@@ -4,6 +4,12 @@ All notable changes to this project are documented here. This file is maintained
 automatically by [semantic-release](https://github.com/semantic-release/semantic-release)
 on every release to `main`.
 
+## [0.4.10](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.4.9...v0.4.10) (2026-10-22)
+
+### 🔧 Maintenance
+
+* **deps:** update base image node-alpine [skip ci] ([8020d67](https://github.com/bauer-group/IP-n8n-MCPServer/commit/8020d6772a1ac781ad81517e5086215543f672eb))
+
 ## [0.4.9](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.4.8...v0.4.9) (2026-10-21)
 
 ### 🔧 Maintenance
