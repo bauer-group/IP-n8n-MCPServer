@@ -3,14 +3,15 @@
 # =============================================================================
 # Every Dependabot PR reaches this workflow (no paths: filter), so each one
 # gets an explicit decision and annotation instead of silently staying open.
-# A PR is merged only if it is a patch update (the module's default; a 0.x
-# update counts stricter) and the pull_request run of docker-release.yml
-# passed on its head commit. That run tests and builds from the PR's own
-# manifests and lockfile: tests.yml (biome, tsc, vitest with coverage and the
-# build, on Node 24 and 26) and the image build with its test stage.
+# A PR is merged only if it is a patch or minor update (the module's default;
+# majors stay open, a 0.x update counts stricter) and the pull_request run of
+# docker-release.yml passed on its head commit. That run tests and builds from
+# the PR's own manifests and lockfile: tests.yml (biome, tsc, vitest with
+# coverage and the build, on Node 24 and 26) and the image build with its
+# test stage.
 #
 #   npm             app/bg-n8n-mcp/package.json + pnpm-lock.yaml
-#                   tested and built - patch updates are merged
+#                   tested and built - patch and minor updates are merged
 #   docker          app/bg-n8n-mcp/Dockerfile
 #                   image built and tested - but FROM node:${NODE_VERSION}
 #                   gives Dependabot no version to read, so it opens no PR;
@@ -19,8 +20,9 @@
 #                   docker-release.yml only VALIDATES these files, it never
 #                   starts the stack. Every image is ${VAR:-image}:${VAR:-tag},
 #                   which Dependabot does not parse, so it opens no PR. A
-#                   literal image tag added here would let its patch PR be
-#                   merged untested - keep the interpolated form.
+#                   literal image tag added here would let its patch and
+#                   minor PRs be merged untested - keep the interpolated
+#                   form.
 #   github-actions  .github/workflows/**
 #                   never merged: a CI change stays open for review
 #
