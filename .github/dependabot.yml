@@ -18,7 +18,15 @@
 #   and cut their own patch: the base image (3) and the npm deps (4). The two
 #   that do not are deliberately left on `chore(...)`: GitHub Actions (1) never
 #   enters the build context, and the compose files (2) describe how the image
-#   is deployed, not what it contains.
+#   is deployed, not what it contains. npm development dependencies (types,
+#   test and lint tooling - `pnpm deploy --prod` drops them) use
+#   `chore(deps-dev)` and release nothing either.
+#
+#   The commit prefix decides whether a merged update is released: fix(...)
+#   cuts a PATCH release and rebuilds the image, chore(...) releases nothing.
+#   docker-maintenance.yml merges with the GITHUB_TOKEN, which starts no push
+#   workflow, and therefore dispatches docker-release.yml itself after the
+#   merge - so a merged fix(...) update is released right away.
 #
 #   Note on (2): the compose files also pin ghcr.io/czlonkowski/n8n-mcp, the
 #   upstream MCP server this gateway fronts. That image is NOT built by us and
@@ -91,6 +99,7 @@ updates:
       # fix(...) — these packages are installed into the image, so an update
       # that never triggers a build is an update that never ships.
       prefix: "fix(deps)"
+      prefix-development: "chore(deps-dev)"
     groups:
       # Type definitions and test tooling never reach the production image
       # (`pnpm deploy --prod` drops them), so batching them keeps the PR

@@ -54,31 +54,70 @@ jobs:
     uses: ./.github/workflows/tests.yml
 
   # ============================================
-  # Release (main branch push only)
+  # Image Build Gate (every event, never pushed)
+  # ============================================
+
+  # Builds the image from this commit on every event - the PR CI that
+  # docker-maintenance.yml waits for, and on a push or dispatch the gate
+  # of the release: a failed build skips the release and the image push.
+  docker-build-validate:
+    name: 🔨 Validate bg-n8n-mcp Build
+    needs: [validate-compose, quality]
+    if: |
+      needs.validate-compose.result == 'success' &&
+      needs.quality.result == 'success'
+    uses: bauer-group/automation-templates/.github/workflows/docker-build.yml@main
+    with:
+      publish-to: 'ghcr'
+      ghcr-image-name: 'bauer-group/ip-n8n-mcpserver/bg-n8n-mcp'
+
+      auto-tags: true
+      dockerfile-path: './app/bg-n8n-mcp/Dockerfile'
+      docker-context: './app/bg-n8n-mcp'
+      # Matches the release job — amd64 only.
+      platforms: 'linux/amd64'
+
+      push: false
+
+      security-scan: false
+      security-fail-on: 'CRITICAL'
+    secrets: inherit
+
+  # ============================================
+  # Release (push to main or dispatch)
   # ============================================
 
   release:
     name: 📦 Create Semantic Release
-    needs: [validate-compose, quality]
+    needs: [validate-compose, quality, docker-build-validate]
     if: |
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       needs.validate-compose.result == 'success' &&
-      needs.quality.result == 'success'
+      needs.quality.result == 'success' &&
+      needs.docker-build-validate.result == 'success'
     uses: bauer-group/automation-templates/.github/workflows/modules-semantic-release.yml@main
     with:
       target-branch: 'main'
+      # Release the commit this run tested and built - the image job below
+      # builds it too. Unpinned, the release would take the tip of main: a
+      # push that landed meanwhile would be tagged untested and be missing
+      # from the image. Pinned, nothing is released once main has moved on,
+      # and the run for the newer main releases both.
+      ref: ${{ github.sha }}
       dry-run: false
       force-release: ${{ inputs.force-release || false }}
       extra-plugins: '@semantic-release/exec'
     secrets: inherit
 
   # ============================================
-  # Docker Build & Push (bg-n8n-mcp image)
+  # Docker Publish (bg-n8n-mcp image, only after a release)
   # ============================================
 
   docker-build-release:
     name: 🐳 Build & Push bg-n8n-mcp
     needs: release
+    # Only a run that created a release publishes - never a PR, a branch
+    # dispatch or a run that released nothing.
     if: needs.release.outputs.release-created == 'true'
     uses: bauer-group/automation-templates/.github/workflows/docker-build.yml@main
     with:
@@ -131,28 +170,4 @@ jobs:
       security-fail-on: 'CRITICAL'
       generate-sbom: true
       sync-dockerhub-readme: true
-    secrets: inherit
-
-  docker-build-pr:
-    name: 🔨 Validate bg-n8n-mcp Build (PR)
-    needs: [validate-compose, quality]
-    if: |
-      github.event_name == 'pull_request' &&
-      needs.validate-compose.result == 'success' &&
-      needs.quality.result == 'success'
-    uses: bauer-group/automation-templates/.github/workflows/docker-build.yml@main
-    with:
-      publish-to: 'ghcr'
-      ghcr-image-name: 'bauer-group/ip-n8n-mcpserver/bg-n8n-mcp'
-
-      auto-tags: true
-      dockerfile-path: './app/bg-n8n-mcp/Dockerfile'
-      docker-context: './app/bg-n8n-mcp'
-      # Matches the release job — amd64 only.
-      platforms: 'linux/amd64'
-
-      push: false
-
-      security-scan: false
-      security-fail-on: 'CRITICAL'
     secrets: inherit
