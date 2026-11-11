@@ -5,7 +5,7 @@
     {
       "name": "node-alpine",
       "image": "node",
-      "tag": "26-alpine",
+      "dockerfile": "app/bg-n8n-mcp/Dockerfile",
       "variable": "NODE_ALPINE_DIGEST",
       "description": "Base image for the bg-n8n-mcp container (app/bg-n8n-mcp/Dockerfile, ARG NODE_VERSION)"
     }
