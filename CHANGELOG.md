@@ -4,6 +4,12 @@ All notable changes to this project are documented here. This file is maintained
 automatically by [semantic-release](https://github.com/semantic-release/semantic-release)
 on every release to `main`.
 
+## [0.4.14](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.4.13...v0.4.14) (2026-11-13)
+
+### 🐛 Bug Fixes
+
+* **deps:** bump @hono/node-server from 2.1.4 to 2.1.6 in /app/bg-n8n-mcp ([#26](https://github.com/bauer-group/IP-n8n-MCPServer/issues/26)) ([6ef43bb](https://github.com/bauer-group/IP-n8n-MCPServer/commit/6ef43bb852c3260e2486c5d85073674c07f3ce88))
+
 ## [0.4.13](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.4.12...v0.4.13) (2026-11-12)
 
 ### 🔧 Maintenance
