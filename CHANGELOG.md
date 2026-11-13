@@ -4,6 +4,12 @@ All notable changes to this project are documented here. This file is maintained
 automatically by [semantic-release](https://github.com/semantic-release/semantic-release)
 on every release to `main`.
 
+## [0.4.15](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.4.14...v0.4.15) (2026-11-13)
+
+### 🐛 Bug Fixes
+
+* **deps:** bump pino-pretty from 13.1.3 to 13.2.0 in /app/bg-n8n-mcp ([#23](https://github.com/bauer-group/IP-n8n-MCPServer/issues/23)) ([cf20717](https://github.com/bauer-group/IP-n8n-MCPServer/commit/cf2071781233fcebd97478f29d90f9cb180b6198))
+
 ## [0.4.14](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.4.13...v0.4.14) (2026-11-13)
 
 ### 🐛 Bug Fixes
