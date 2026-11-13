@@ -10,10 +10,10 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.1.6
-        version: 2.1.6(hono@4.13.13)
+        version: 2.1.6(hono@4.13.16)
       hono:
-        specifier: ^4.13.13
-        version: 4.13.13
+        specifier: ^4.13.16
+        version: 4.13.16
       pino:
         specifier: ^10.3.1
         version: 10.3.1
@@ -517,8 +517,8 @@ packages:
   help-me@5.0.0:
     resolution: {integrity: sha512-7xgomUX6ADmcYzFik0HzAxh/73YlKR9bmFzf51CZwR+b6YtzU2m0u49hQCqV6SvlqIqsaxovfwdvbnsw3b/zpg==}
 
-  hono@4.13.13:
-    resolution: {integrity: sha512-CQ46U0ZkAGmbT/4UxdzzGJpacP2IeKgY4a5/tOI9AABbpOMfK739wfDXmv1usCk+3RkKj1hQy4/fjhiwa2xlrA==}
+  hono@4.13.16:
+    resolution: {integrity: sha512-AOLOEhvrV+iH92xXCnFr/5+3KjPKcI3xP63XJtX5spAnkznPdHijlIsUTpi7/9EhWqrTCekw5c5zh1K+YsVw7A==}
     engines: {node: '>=16.9.0'}
 
   joycon@3.1.1:
@@ -888,9 +888,9 @@ snapshots:
   '@biomejs/cli-win32-x64@2.6.6':
     optional: true
 
-  '@hono/node-server@2.1.6(hono@4.13.13)':
+  '@hono/node-server@2.1.6(hono@4.13.16)':
     dependencies:
-      hono: 4.13.13
+      hono: 4.13.16
 
   '@jridgewell/resolve-uri@3.1.2': {}
 
@@ -1118,7 +1118,7 @@ snapshots:
 
   help-me@5.0.0: {}
 
-  hono@4.13.13: {}
+  hono@4.13.16: {}
 
   joycon@3.1.1: {}
 
