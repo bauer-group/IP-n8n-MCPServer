@@ -4,6 +4,12 @@ All notable changes to this project are documented here. This file is maintained
 automatically by [semantic-release](https://github.com/semantic-release/semantic-release)
 on every release to `main`.
 
+## [0.4.20](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.4.19...v0.4.20) (2026-11-23)
+
+### 🐛 Bug Fixes
+
+* **deps:** bump redis from 6.2.1 to 6.3.1 in /app/bg-n8n-mcp ([dcd6922](https://github.com/bauer-group/IP-n8n-MCPServer/commit/dcd692263a2d072873831c3654109dab17e49027))
+
 ## [0.4.19](https://github.com/bauer-group/IP-n8n-MCPServer/compare/v0.4.18...v0.4.19) (2026-11-22)
 
 ### 🐛 Bug Fixes
